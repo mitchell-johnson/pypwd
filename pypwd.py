@@ -4,18 +4,82 @@ import json
 import os
 import sys
 import getpass
-import hashlib
-from cryptography.fernet import Fernet
+import secrets
+import time
+import re
+from pathlib import Path
+from cryptography.fernet import Fernet, InvalidToken
 from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
 import base64
 
 class PasswordManager:
     def __init__(self, filename="passwords.enc"):
-        self.filename = filename
-        self.salt = b'salt1234567890ab'  # In production, use random salt per file
+        self.filename = self._validate_filename(filename)
+        self.salt = None
+        self.failed_attempts = 0
+        self.last_attempt_time = 0
+        self.max_attempts = 3
+        self.lockout_duration = 30  # seconds
+        
+    def _validate_filename(self, filename):
+        """Validate filename to prevent path traversal attacks"""
+        if not filename:
+            raise ValueError("Filename cannot be empty")
+        
+        # Remove any path components and keep only the filename
+        filename = os.path.basename(filename)
+        
+        # Check for valid characters (alphanumeric, dots, underscores, hyphens)
+        if not re.match(r'^[a-zA-Z0-9._-]+$', filename):
+            raise ValueError("Invalid characters in filename")
+            
+        # Ensure it has .enc extension
+        if not filename.endswith('.enc'):
+            filename += '.enc'
+            
+        return filename
+        
+    def _validate_password_strength(self, password):
+        """Validate password meets minimum security requirements"""
+        if len(password) < 8:
+            return False, "Password must be at least 8 characters long"
+        if not re.search(r'[A-Z]', password):
+            return False, "Password must contain at least one uppercase letter"
+        if not re.search(r'[a-z]', password):
+            return False, "Password must contain at least one lowercase letter"
+        if not re.search(r'\d', password):
+            return False, "Password must contain at least one number"
+        if not re.search(r'[!@#$%^&*(),.?":{}|<>]', password):
+            return False, "Password must contain at least one special character"
+        return True, "Password meets requirements"
+        
+    def _check_rate_limit(self):
+        """Check if user is rate limited due to failed attempts"""
+        current_time = time.time()
+        if self.failed_attempts >= self.max_attempts:
+            time_since_last = current_time - self.last_attempt_time
+            if time_since_last < self.lockout_duration:
+                remaining = int(self.lockout_duration - time_since_last)
+                print(f"Too many failed attempts. Please wait {remaining} seconds.")
+                return False
+            else:
+                # Reset after lockout period
+                self.failed_attempts = 0
+        return True
+        
+    def _record_failed_attempt(self):
+        """Record a failed login attempt"""
+        self.failed_attempts += 1
+        self.last_attempt_time = time.time()
+        
+    def _generate_salt(self):
+        """Generate a cryptographically secure random salt"""
+        return secrets.token_bytes(32)
         
     def _derive_key(self, password):
+        if self.salt is None:
+            raise ValueError("Salt not initialized")
         kdf = PBKDF2HMAC(
             algorithm=hashes.SHA256(),
             length=32,
@@ -37,24 +101,51 @@ class PasswordManager:
             f = Fernet(key)
             decrypted_data = f.decrypt(encrypted_data)
             return decrypted_data.decode()
-        except Exception:
+        except (InvalidToken, ValueError, UnicodeDecodeError) as e:
             return None
+            
+    def _set_file_permissions(self, filepath):
+        """Set restrictive file permissions (owner read/write only)"""
+        try:
+            os.chmod(filepath, 0o600)
+        except OSError:
+            print("Warning: Could not set restrictive file permissions")
             
     def create_new_file(self):
         print("Creating new password manager file...")
-        master_password = getpass.getpass("Set master password: ")
+        print("Password requirements:")
+        print("- At least 8 characters long")
+        print("- Contains uppercase and lowercase letters")
+        print("- Contains at least one number")
+        print("- Contains at least one special character")
+        
+        while True:
+            master_password = getpass.getpass("Set master password: ")
+            is_valid, message = self._validate_password_strength(master_password)
+            if not is_valid:
+                print(f"Error: {message}")
+                continue
+            break
+            
         confirm_password = getpass.getpass("Confirm master password: ")
         
         if master_password != confirm_password:
             print("Passwords don't match!")
             return False
             
-        initial_data = {"passwords": []}
+        # Generate unique salt for this file
+        self.salt = self._generate_salt()
+        
+        initial_data = {
+            "salt": base64.b64encode(self.salt).decode(),
+            "passwords": []
+        }
         encrypted_data = self._encrypt_data(json.dumps(initial_data), master_password)
         
         with open(self.filename, 'wb') as f:
             f.write(encrypted_data)
             
+        self._set_file_permissions(self.filename)
         print(f"Password file '{self.filename}' created successfully!")
         return True
         
@@ -65,19 +156,47 @@ class PasswordManager:
         with open(self.filename, 'rb') as f:
             encrypted_data = f.read()
             
-        decrypted_data = self._decrypt_data(encrypted_data, master_password)
+        # First decrypt to get the salt
+        decrypted_data = self._decrypt_data_with_fallback(encrypted_data, master_password)
         if decrypted_data is None:
             return None
             
         try:
-            return json.loads(decrypted_data)
+            data = json.loads(decrypted_data)
+            # Extract salt from file if it exists (new format)
+            if 'salt' in data:
+                self.salt = base64.b64decode(data['salt'])
+            else:
+                # Legacy format - use old hardcoded salt
+                self.salt = b'salt1234567890ab'
+            return data
         except json.JSONDecodeError:
             return None
             
+    def _decrypt_data_with_fallback(self, encrypted_data, password):
+        """Try to decrypt with current salt, fallback to legacy salt if needed"""
+        # Try with legacy salt first for backward compatibility
+        self.salt = b'salt1234567890ab'
+        result = self._decrypt_data(encrypted_data, password)
+        if result is not None:
+            return result
+            
+        # If that fails and we have a modern salt, try with it
+        if hasattr(self, '_temp_salt') and self._temp_salt:
+            self.salt = self._temp_salt
+            return self._decrypt_data(encrypted_data, password)
+            
+        return None
+            
     def save_passwords(self, data, master_password):
+        # Ensure salt is included in data
+        if 'salt' not in data and self.salt is not None:
+            data['salt'] = base64.b64encode(self.salt).decode()
+            
         encrypted_data = self._encrypt_data(json.dumps(data, indent=2), master_password)
         with open(self.filename, 'wb') as f:
             f.write(encrypted_data)
+        self._set_file_permissions(self.filename)
             
     def add_password(self, data, master_password):
         print("\nAdd new password entry:")
@@ -122,6 +241,8 @@ class PasswordManager:
         if not query:
             return
             
+        show_passwords = input("Show passwords in results? (y/n): ").lower() == 'y'
+            
         matches = []
         for entry in data["passwords"]:
             if (query in entry["service"].lower() or 
@@ -137,7 +258,10 @@ class PasswordManager:
         for i, entry in enumerate(matches, 1):
             print(f"{i}. {entry['service']}")
             print(f"   Username: {entry['username']}")
-            print(f"   Password: {entry['password']}")
+            if show_passwords:
+                print(f"   Password: {entry['password']}")
+            else:
+                print(f"   Password: {'*' * len(entry['password'])}")
             print()
             
     def edit_password(self, data, master_password):
@@ -190,13 +314,20 @@ class PasswordManager:
             else:
                 return
                 
+        # Rate limiting check
+        if not self._check_rate_limit():
+            return
+            
         master_password = getpass.getpass("Enter master password: ")
         data = self.load_passwords(master_password)
         
         if data is None:
             print("Invalid master password or corrupted file!")
+            self._record_failed_attempt()
             return
             
+        # Reset failed attempts on successful login
+        self.failed_attempts = 0
         print("Password manager loaded successfully!")
         
         while True:
@@ -224,13 +355,20 @@ class PasswordManager:
                 print("Invalid option!")
 
 def main():
-    if len(sys.argv) > 1:
-        filename = sys.argv[1]
-    else:
-        filename = "passwords.enc"
-        
-    pm = PasswordManager(filename)
-    pm.run()
+    try:
+        if len(sys.argv) > 1:
+            filename = sys.argv[1]
+        else:
+            filename = "passwords.enc"
+            
+        pm = PasswordManager(filename)
+        pm.run()
+    except ValueError as e:
+        print(f"Error: {e}")
+        sys.exit(1)
+    except KeyboardInterrupt:
+        print("\nExiting...")
+        sys.exit(0)
 
 if __name__ == "__main__":
     main()

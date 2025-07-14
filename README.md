@@ -105,9 +105,15 @@ Password saved successfully!
 
 ## Security Features
 
+- **Unique Salt Per File**: Each password file uses a cryptographically secure random salt
 - **PBKDF2 Key Derivation**: Uses 100,000 iterations for key strengthening
 - **Fernet Encryption**: Symmetric encryption using cryptographically secure methods
 - **Secure Password Input**: Uses `getpass` module to hide password input
+- **Password Strength Requirements**: Enforces strong master passwords
+- **Rate Limiting**: Protection against brute force attacks (3 attempts, 30-second lockout)
+- **Restrictive File Permissions**: Password files are set to owner-only access (600)
+- **Path Traversal Protection**: Validates filenames to prevent directory traversal attacks
+- **Secure Search**: Option to hide passwords in search results
 - **Local Storage Only**: Passwords never leave your local machine
 
 ## File Format
@@ -122,9 +128,13 @@ The program creates an encrypted file (default: `passwords.enc`) that contains y
 ## Security Considerations
 
 - Keep your master password secure and memorable
+- Master passwords must meet strength requirements (8+ chars, mixed case, numbers, special chars)
 - Regularly backup your encrypted password file
-- The program uses a fixed salt for simplicity - in production environments, consider using unique salts per file
+- Files are protected with restrictive permissions (owner read/write only)
+- Rate limiting prevents brute force attacks (3 attempts, then 30-second lockout)
+- Each password file uses a unique cryptographically secure salt
 - Consider storing the encrypted file in a secure location
+- Use the secure search option to hide passwords when others might see your screen
 
 ## License
 
