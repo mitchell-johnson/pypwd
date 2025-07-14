@@ -18,8 +18,8 @@ class TestPasswordManager(unittest.TestCase):
         self.original_cwd = os.getcwd()
         os.chdir(self.temp_dir)
         self.pm = PasswordManager(self.test_filename)
-        self.test_password = "TestPass123!"
-        self.weak_password = "weak"
+        self.test_password = "TestPassword123"
+        self.weak_password = "short"
         
     def tearDown(self):
         """Clean up test files"""
@@ -62,41 +62,29 @@ class TestFilenameValidation(TestPasswordManager):
 class TestPasswordStrengthValidation(TestPasswordManager):
     """Test password strength validation"""
     
-    def test_valid_strong_password(self):
-        """Test strong password passes validation"""
-        is_valid, message = self.pm._validate_password_strength("StrongPass123!")
+    def test_valid_password(self):
+        """Test valid password passes validation"""
+        is_valid, message = self.pm._validate_password_strength("ValidPassword123")
         self.assertTrue(is_valid)
         self.assertEqual(message, "Password meets requirements")
         
     def test_too_short_password(self):
         """Test password too short fails validation"""
-        is_valid, message = self.pm._validate_password_strength("Short1!")
+        is_valid, message = self.pm._validate_password_strength("Short")
         self.assertFalse(is_valid)
-        self.assertIn("at least 8 characters", message)
+        self.assertIn("at least 10 characters", message)
         
-    def test_no_uppercase_password(self):
-        """Test password without uppercase fails validation"""
-        is_valid, message = self.pm._validate_password_strength("lowercase123!")
-        self.assertFalse(is_valid)
-        self.assertIn("uppercase letter", message)
+    def test_minimum_length_password(self):
+        """Test password with exactly 10 characters passes"""
+        is_valid, message = self.pm._validate_password_strength("1234567890")
+        self.assertTrue(is_valid)
+        self.assertEqual(message, "Password meets requirements")
         
-    def test_no_lowercase_password(self):
-        """Test password without lowercase fails validation"""
-        is_valid, message = self.pm._validate_password_strength("UPPERCASE123!")
-        self.assertFalse(is_valid)
-        self.assertIn("lowercase letter", message)
-        
-    def test_no_number_password(self):
-        """Test password without numbers fails validation"""
-        is_valid, message = self.pm._validate_password_strength("NoNumbers!")
-        self.assertFalse(is_valid)
-        self.assertIn("number", message)
-        
-    def test_no_special_char_password(self):
-        """Test password without special characters fails validation"""
-        is_valid, message = self.pm._validate_password_strength("NoSpecial123")
-        self.assertFalse(is_valid)
-        self.assertIn("special character", message)
+    def test_simple_long_password(self):
+        """Test simple but long password passes validation"""
+        is_valid, message = self.pm._validate_password_strength("thisisalongpassword")
+        self.assertTrue(is_valid)
+        self.assertEqual(message, "Password meets requirements")
 
 class TestEncryptionDecryption(TestPasswordManager):
     """Test encryption and decryption functionality"""

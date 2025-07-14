@@ -109,7 +109,7 @@ Password saved successfully!
 - **PBKDF2 Key Derivation**: Uses 100,000 iterations for key strengthening
 - **Fernet Encryption**: Symmetric encryption using cryptographically secure methods
 - **Secure Password Input**: Uses `getpass` module to hide password input
-- **Password Strength Requirements**: Enforces strong master passwords
+- **Password Length Requirements**: Enforces minimum 10-character master passwords
 - **Rate Limiting**: Protection against brute force attacks (3 attempts, 30-second lockout)
 - **Restrictive File Permissions**: Password files are set to owner-only access (600)
 - **Path Traversal Protection**: Validates filenames to prevent directory traversal attacks
@@ -128,7 +128,7 @@ The program creates an encrypted file (default: `passwords.enc`) that contains y
 ## Security Considerations
 
 - Keep your master password secure and memorable
-- Master passwords must meet strength requirements (8+ chars, mixed case, numbers, special chars)
+- Master passwords must be at least 10 characters long
 - Regularly backup your encrypted password file
 - Files are protected with restrictive permissions (owner read/write only)
 - Rate limiting prevents brute force attacks (3 attempts, then 30-second lockout)
