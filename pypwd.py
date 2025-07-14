@@ -140,6 +140,47 @@ class PasswordManager:
             print(f"   Password: {entry['password']}")
             print()
             
+    def edit_password(self, data, master_password):
+        if not data["passwords"]:
+            print("\nNo passwords stored.")
+            return data
+            
+        print(f"\nSelect entry to edit ({len(data['passwords'])} entries):")
+        print("-" * 50)
+        for i, entry in enumerate(data["passwords"], 1):
+            print(f"{i}. {entry['service']} ({entry['username']})")
+            
+        try:
+            choice = int(input("\nEnter entry number: ").strip())
+            if choice < 1 or choice > len(data["passwords"]):
+                print("Invalid entry number!")
+                return data
+        except ValueError:
+            print("Invalid input!")
+            return data
+            
+        entry_index = choice - 1
+        entry = data["passwords"][entry_index]
+        
+        print(f"\nEditing: {entry['service']}")
+        print("Leave blank to keep current value:")
+        
+        new_service = input(f"Service/Website [{entry['service']}]: ").strip()
+        new_username = input(f"Username [{entry['username']}]: ").strip()
+        new_password = getpass.getpass("New Password (leave blank to keep current): ")
+        
+        if new_service:
+            entry["service"] = new_service
+        if new_username:
+            entry["username"] = new_username
+        if new_password:
+            entry["password"] = new_password
+            
+        data["passwords"][entry_index] = entry
+        self.save_passwords(data, master_password)
+        print("Password entry updated successfully!")
+        return data
+            
     def run(self):
         if not os.path.exists(self.filename):
             print(f"Password file '{self.filename}' not found.")
@@ -163,9 +204,10 @@ class PasswordManager:
             print("1. Add password")
             print("2. List passwords") 
             print("3. Search passwords")
-            print("4. Exit")
+            print("4. Edit password")
+            print("5. Exit")
             
-            choice = input("\nSelect option (1-4): ").strip()
+            choice = input("\nSelect option (1-5): ").strip()
             
             if choice == '1':
                 data = self.add_password(data, master_password)
@@ -174,6 +216,8 @@ class PasswordManager:
             elif choice == '3':
                 self.search_passwords(data)
             elif choice == '4':
+                data = self.edit_password(data, master_password)
+            elif choice == '5':
                 print("Goodbye!")
                 break
             else:

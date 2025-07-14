@@ -65,7 +65,13 @@ Once logged in with your master password, you'll see these options:
 - Shows matching entries with actual passwords visible
 - Case-insensitive search
 
-### 4. Exit
+### 4. Edit Password
+- Select an entry by number to edit
+- Modify service name, username, or password
+- Leave fields blank to keep current values
+- Changes are automatically encrypted and saved
+
+### 5. Exit
 - Safely exits the program
 
 ## Example Session
@@ -85,9 +91,10 @@ Options:
 1. Add password
 2. List passwords
 3. Search passwords
-4. Exit
+4. Edit password
+5. Exit
 
-Select option (1-4): 1
+Select option (1-5): 1
 
 Add new password entry:
 Service/Website: gmail
