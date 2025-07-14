@@ -136,13 +136,12 @@ class PasswordManager:
         # Generate unique salt for this file
         self.salt = self._generate_salt()
         
-        initial_data = {
-            "salt": base64.b64encode(self.salt).decode(),
-            "passwords": []
-        }
+        initial_data = {"passwords": []}
         encrypted_data = self._encrypt_data(json.dumps(initial_data), master_password)
         
         with open(self.filename, 'wb') as f:
+            # Write salt first (32 bytes), then encrypted data
+            f.write(self.salt)
             f.write(encrypted_data)
             
         self._set_file_permissions(self.filename)
@@ -154,47 +153,44 @@ class PasswordManager:
             return None
             
         with open(self.filename, 'rb') as f:
-            encrypted_data = f.read()
+            file_data = f.read()
             
-        # First decrypt to get the salt
-        decrypted_data = self._decrypt_data_with_fallback(encrypted_data, master_password)
-        if decrypted_data is None:
-            return None
+        # Check if this is a new format file (starts with 32-byte salt)
+        if len(file_data) >= 32:
+            # Try new format: salt (32 bytes) + encrypted data
+            potential_salt = file_data[:32]
+            encrypted_data = file_data[32:]
             
-        try:
-            data = json.loads(decrypted_data)
-            # Extract salt from file if it exists (new format)
-            if 'salt' in data:
-                self.salt = base64.b64decode(data['salt'])
-            else:
-                # Legacy format - use old hardcoded salt
-                self.salt = b'salt1234567890ab'
-            return data
-        except json.JSONDecodeError:
-            return None
+            self.salt = potential_salt
+            decrypted_data = self._decrypt_data(encrypted_data, master_password)
             
-    def _decrypt_data_with_fallback(self, encrypted_data, password):
-        """Try to decrypt with current salt, fallback to legacy salt if needed"""
-        # Try with legacy salt first for backward compatibility
+            if decrypted_data is not None:
+                try:
+                    data = json.loads(decrypted_data)
+                    if 'passwords' in data:  # Valid new format
+                        return data
+                except json.JSONDecodeError:
+                    pass
+        
+        # Fall back to legacy format (entire file is encrypted data with fixed salt)
         self.salt = b'salt1234567890ab'
-        result = self._decrypt_data(encrypted_data, password)
-        if result is not None:
-            return result
-            
-        # If that fails and we have a modern salt, try with it
-        if hasattr(self, '_temp_salt') and self._temp_salt:
-            self.salt = self._temp_salt
-            return self._decrypt_data(encrypted_data, password)
-            
+        decrypted_data = self._decrypt_data(file_data, master_password)
+        
+        if decrypted_data is not None:
+            try:
+                data = json.loads(decrypted_data)
+                if 'passwords' in data:  # Valid legacy format
+                    return data
+            except json.JSONDecodeError:
+                pass
+        
         return None
             
     def save_passwords(self, data, master_password):
-        # Ensure salt is included in data
-        if 'salt' not in data and self.salt is not None:
-            data['salt'] = base64.b64encode(self.salt).decode()
-            
         encrypted_data = self._encrypt_data(json.dumps(data, indent=2), master_password)
         with open(self.filename, 'wb') as f:
+            # Write salt first (32 bytes), then encrypted data
+            f.write(self.salt)
             f.write(encrypted_data)
         self._set_file_permissions(self.filename)
             
