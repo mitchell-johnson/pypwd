@@ -1,10 +1,10 @@
 # PyPWD - Python Password Manager
 
-A simple, secure command-line password manager that stores encrypted passwords in a MySQL database.
+A simple, secure command-line password manager that stores encrypted passwords in a local SQLite database.
 
 ## Features
 
-- **MySQL Database Storage**: Encrypted password storage in MySQL database
+- **Embedded SQLite Database**: Fully self-contained with no external database setup required
 - **User Account Management**: Multiple users can have separate encrypted vaults
 - **Individual Password Encryption**: Each password is individually encrypted
 - **Interactive UI**: Arrow key navigation and detailed entry views
@@ -23,17 +23,12 @@ cd pypwd
 pip install -r requirements.txt
 ```
 
-3. Ensure MySQL is running on your system:
+3. Run PyPWD:
 ```bash
-# On macOS (using Homebrew)
-brew services start mysql
-
-# On Linux (Ubuntu/Debian)
-sudo systemctl start mysql
-
-# On Linux (CentOS/RHEL)
-sudo systemctl start mysqld
+python pypwd.py
 ```
+
+No additional database setup required - PyPWD uses an embedded SQLite database!
 
 ## Usage
 
@@ -44,14 +39,12 @@ python pypwd.py
 
 ## First Time Setup
 
-When you run PyPWD for the first time, it will automatically set up its own secure database:
+When you run PyPWD for the first time, it automatically creates a secure SQLite database:
 
-### Automatic Database Setup
-1. PyPWD will detect it's the first run and offer setup options
-2. Choose **Automatic setup** (requires MySQL root password) or **Manual setup**
-3. For automatic setup, enter your MySQL root password when prompted
-4. PyPWD will create its own database (`pypwd_secure`) and user (`pypwd_app`)
-5. All database credentials are generated securely and stored in `~/.pypwd/db_config.json`
+### Automatic Database Creation
+1. PyPWD detects it's the first run and creates `~/.pypwd/pypwd.db`
+2. No external database setup or credentials required
+3. Database file permissions are automatically set to 600 (owner read/write only)
 
 ### User Account Creation
 1. Enter a username for your account
@@ -60,9 +53,6 @@ When you run PyPWD for the first time, it will automatically set up its own secu
 4. Confirm your master password
 
 **Important**: Remember your master password! There is no way to recover it if forgotten.
-
-### Manual Setup (if you don't have MySQL root access)
-If you choose manual setup or automatic setup fails, PyPWD will display the exact SQL commands to run as a MySQL administrator.
 
 ## Menu Options
 
@@ -107,13 +97,7 @@ When you select an entry in interactive mode, you'll see a detailed view with th
 ```
 $ python pypwd.py
 Setting up PyPWD database for first time...
-This will create a secure database and user for PyPWD.
-
-Setup options:
-1. Automatic setup (requires MySQL root password)
-2. Manual setup (show commands to run)
-Choose (1/2): 1
-Enter MySQL root password: ********
+Creating secure local database...
 Database setup completed successfully!
 
 PyPWD - Secure Password Manager
@@ -151,7 +135,7 @@ Password saved successfully!
 - **Secure Password Input**: Uses `getpass` module to hide password input
 - **Password Length Requirements**: Enforces minimum 10-character master passwords
 - **Rate Limiting**: Protection against brute force attacks (3 attempts, 30-second lockout)
-- **Database Security**: Individual password encryption in MySQL database
+- **Database Security**: Individual password encryption in embedded SQLite database
 - **Interactive UI**: Arrow key navigation and detailed entry views
 - **Notes Support**: Add notes and timestamps to password entries
 - **Export Functionality**: Export individual passwords to text files
@@ -159,7 +143,7 @@ Password saved successfully!
 
 ## Database Schema
 
-PyPWD automatically creates its own secure database (`pypwd_secure`) with two tables:
+PyPWD automatically creates a secure SQLite database (`~/.pypwd/pypwd.db`) with two tables:
 
 1. **users**: Stores user accounts with hashed master passwords and unique salts
 2. **passwords**: Stores individually encrypted password entries linked to users
@@ -168,33 +152,23 @@ All password data is encrypted using the user's master password before being sto
 
 ## Configuration
 
-PyPWD stores its database configuration in `~/.pypwd/db_config.json` with restricted permissions (600). This file contains:
-- Database connection details
-- Generated secure credentials
-- Host and port configuration
-
-You can customize the MySQL host/port using environment variables:
-```bash
-export PYPWD_DB_HOST=localhost  # default
-export PYPWD_DB_PORT=3306       # default
-```
+PyPWD stores its SQLite database in `~/.pypwd/pypwd.db` with restricted permissions (600). No additional configuration required - the database is completely self-contained and portable.
 
 ## Requirements
 
 - Python 3.6+
-- MySQL 5.7+ or MariaDB 10.2+
 - cryptography library
-- mysql-connector-python library
+- SQLite (included with Python)
 
 ## Security Considerations
 
 - Keep your master password secure and memorable
 - Master passwords must be at least 10 characters long
-- Regularly backup your encrypted password file
+- Regularly backup your encrypted database file (~/.pypwd/pypwd.db)
 - Files are protected with restrictive permissions (owner read/write only)
 - Rate limiting prevents brute force attacks (3 attempts, then 30-second lockout)
-- Each password file uses a unique cryptographically secure salt
-- Consider storing the encrypted file in a secure location
+- Each user account uses a unique cryptographically secure salt
+- Consider storing the encrypted database file in a secure location
 - Use the secure search option to hide passwords when others might see your screen
 
 ## License

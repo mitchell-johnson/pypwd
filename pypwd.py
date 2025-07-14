@@ -9,8 +9,7 @@ import time
 import re
 import curses
 import datetime
-import mysql.connector
-from mysql.connector import Error
+import sqlite3
 from pathlib import Path
 from cryptography.fernet import Fernet, InvalidToken
 from cryptography.hazmat.primitives import hashes
@@ -19,13 +18,8 @@ import base64
 
 class PasswordManager:
     def __init__(self):
-        # Internal database configuration
-        self.db_host = os.getenv('PYPWD_DB_HOST', 'localhost')
-        self.db_port = int(os.getenv('PYPWD_DB_PORT', '3306'))
-        self.db_name = 'pypwd_secure'
-        self.db_user = 'pypwd_app'
-        self.db_password = self._generate_db_password()
-        
+        # Database file configuration
+        self.db_path = self._get_db_path()
         self.connection = None
         self.salt = None
         self.user_id = None
@@ -34,136 +28,41 @@ class PasswordManager:
         self.max_attempts = 3
         self.lockout_duration = 30  # seconds
         
-        # Initialize database on first run
+        # Initialize database
         self._setup_database()
         
-    def _generate_db_password(self):
-        """Generate a secure database password"""
-        return base64.urlsafe_b64encode(secrets.token_bytes(32)).decode()[:43]
-        
-    def _get_config_file(self):
-        """Get path to configuration file"""
+    def _get_db_path(self):
+        """Get path to SQLite database file"""
         home_dir = os.path.expanduser("~")
-        config_dir = os.path.join(home_dir, ".pypwd")
-        os.makedirs(config_dir, exist_ok=True)
-        return os.path.join(config_dir, "db_config.json")
-        
-    def _save_db_config(self):
-        """Save database configuration securely"""
-        config = {
-            'host': self.db_host,
-            'port': self.db_port,
-            'database': self.db_name,
-            'user': self.db_user,
-            'password': self.db_password
-        }
-        
-        config_file = self._get_config_file()
-        with open(config_file, 'w') as f:
-            json.dump(config, f)
-        
-        # Set restrictive permissions
-        os.chmod(config_file, 0o600)
-        
-    def _load_db_config(self):
-        """Load database configuration"""
-        config_file = self._get_config_file()
-        if os.path.exists(config_file):
-            try:
-                with open(config_file, 'r') as f:
-                    config = json.load(f)
-                    self.db_host = config['host']
-                    self.db_port = config['port']
-                    self.db_name = config['database']
-                    self.db_user = config['user']
-                    self.db_password = config['password']
-                    return True
-            except (json.JSONDecodeError, KeyError):
-                pass
-        return False
+        data_dir = os.path.join(home_dir, ".pypwd")
+        os.makedirs(data_dir, exist_ok=True)
+        db_file = os.path.join(data_dir, "pypwd.db")
+        return db_file
         
     def _setup_database(self):
-        """Setup database and user automatically"""
-        # Try to load existing config first
-        if self._load_db_config():
+        """Setup SQLite database automatically"""
+        # Check if database file exists
+        if os.path.exists(self.db_path):
             return
             
         print("Setting up PyPWD database for first time...")
-        print("This will create a secure database and user for PyPWD.")
+        print("Creating secure local database...")
         
-        choice = input("\nSetup options:\n1. Automatic setup (requires MySQL root password)\n2. Manual setup (show commands to run)\nChoose (1/2): ").strip()
-        
-        if choice == "2":
-            print(f"\nPlease run these commands in MySQL as root:")
-            print(f"  CREATE DATABASE {self.db_name};")
-            print(f"  CREATE USER '{self.db_user}'@'localhost' IDENTIFIED BY '{self.db_password}';")
-            print(f"  GRANT ALL PRIVILEGES ON {self.db_name}.* TO '{self.db_user}'@'localhost';")
-            print(f"  FLUSH PRIVILEGES;")
-            
-            self._save_db_config()
-            print(f"\nConfiguration saved to: {self._get_config_file()}")
-            print("\nAfter running the commands, restart PyPWD.")
-            sys.exit(0)
-        
-        # Get MySQL root credentials for automatic setup
-        root_password = getpass.getpass("Enter MySQL root password: ")
-        
-        try:
-            # Connect as root to create database and user
-            root_connection = mysql.connector.connect(
-                host=self.db_host,
-                port=self.db_port,
-                user='root',
-                password=root_password
-            )
-            
-            cursor = root_connection.cursor()
-            
-            # Create database
-            cursor.execute(f"CREATE DATABASE IF NOT EXISTS {self.db_name}")
-            
-            # Create user with generated password
-            cursor.execute(f"CREATE USER IF NOT EXISTS '{self.db_user}'@'localhost' IDENTIFIED BY '{self.db_password}'")
-            cursor.execute(f"GRANT ALL PRIVILEGES ON {self.db_name}.* TO '{self.db_user}'@'localhost'")
-            cursor.execute("FLUSH PRIVILEGES")
-            
-            cursor.close()
-            root_connection.close()
-            
-            # Save configuration for future use
-            self._save_db_config()
-            
-            print("Database setup completed successfully!")
-            
-        except Error as e:
-            print(f"Database setup failed: {e}")
-            print("\nAlternative: If you don't have MySQL root access,")
-            print("please create the database and user manually:")
-            print(f"  CREATE DATABASE {self.db_name};")
-            print(f"  CREATE USER '{self.db_user}'@'localhost' IDENTIFIED BY '{self.db_password}';")
-            print(f"  GRANT ALL PRIVILEGES ON {self.db_name}.* TO '{self.db_user}'@'localhost';")
-            print(f"  FLUSH PRIVILEGES;")
-            print(f"\nDatabase password: {self.db_password}")
-            
-            # Save config anyway for manual setup
-            self._save_db_config()
-            print(f"\nConfiguration saved to: {self._get_config_file()}")
-            sys.exit(1)
+        # Create the database file and tables
+        self._connect_db()
+        print("Database setup completed successfully!")
             
     def _connect_db(self):
-        """Establish database connection"""
+        """Establish SQLite database connection"""
         try:
-            if self.connection is None or not self.connection.is_connected():
-                self.connection = mysql.connector.connect(
-                    host=self.db_host,
-                    port=self.db_port,
-                    user=self.db_user,
-                    password=self.db_password,
-                    database=self.db_name
-                )
+            if self.connection is None:
+                self.connection = sqlite3.connect(self.db_path)
+                self.connection.row_factory = sqlite3.Row  # Enable column access by name
                 self._create_tables()
+                # Set restrictive permissions on database file
+                os.chmod(self.db_path, 0o600)
             return True
-        except Error as e:
+        except sqlite3.Error as e:
             print(f"Database connection error: {e}")
             return False
             
@@ -174,26 +73,26 @@ class PasswordManager:
         # Users table to store master password hashes and salts
         cursor.execute('''
             CREATE TABLE IF NOT EXISTS users (
-                id INT AUTO_INCREMENT PRIMARY KEY,
-                username VARCHAR(255) UNIQUE NOT NULL,
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                username TEXT UNIQUE NOT NULL,
                 password_hash TEXT NOT NULL,
                 salt BLOB NOT NULL,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                modified_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+                modified_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
         ''')
         
         # Passwords table to store encrypted password entries
         cursor.execute('''
             CREATE TABLE IF NOT EXISTS passwords (
-                id INT AUTO_INCREMENT PRIMARY KEY,
-                user_id INT NOT NULL,
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER NOT NULL,
                 service_name TEXT NOT NULL,
                 username TEXT NOT NULL,
                 encrypted_password BLOB NOT NULL,
                 encrypted_notes BLOB,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                modified_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+                modified_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
             )
         ''')
@@ -203,8 +102,9 @@ class PasswordManager:
         
     def _disconnect_db(self):
         """Close database connection"""
-        if self.connection and self.connection.is_connected():
+        if self.connection:
             self.connection.close()
+            self.connection = None
         
     def _validate_password_strength(self, password):
         """Validate password meets minimum security requirements"""
@@ -312,7 +212,7 @@ class PasswordManager:
             cursor = self.connection.cursor()
             cursor.execute('''
                 INSERT INTO users (username, password_hash, salt) 
-                VALUES (%s, %s, %s)
+                VALUES (?, ?, ?)
             ''', (username, password_hash, self.salt))
             self.connection.commit()
             self.user_id = cursor.lastrowid
@@ -320,11 +220,11 @@ class PasswordManager:
             
             print(f"User account '{username}' created successfully!")
             return True
-        except Error as e:
-            if "Duplicate entry" in str(e):
-                print(f"User '{username}' already exists!")
-            else:
-                print(f"Error creating user: {e}")
+        except sqlite3.IntegrityError:
+            print(f"User '{username}' already exists!")
+            return False
+        except sqlite3.Error as e:
+            print(f"Error creating user: {e}")
             return False
         
     def authenticate_user(self, username, master_password):
@@ -335,7 +235,7 @@ class PasswordManager:
         try:
             cursor = self.connection.cursor()
             cursor.execute('''
-                SELECT id, password_hash, salt FROM users WHERE username = %s
+                SELECT id, password_hash, salt FROM users WHERE username = ?
             ''', (username,))
             result = cursor.fetchone()
             cursor.close()
@@ -353,7 +253,7 @@ class PasswordManager:
                 return self.load_user_passwords(master_password)
             return None
             
-        except Error as e:
+        except sqlite3.Error as e:
             print(f"Authentication error: {e}")
             return None
             
@@ -367,7 +267,7 @@ class PasswordManager:
             cursor.execute('''
                 SELECT service_name, username, encrypted_password, encrypted_notes,
                        created_at, modified_at 
-                FROM passwords WHERE user_id = %s
+                FROM passwords WHERE user_id = ?
             ''', (self.user_id,))
             results = cursor.fetchall()
             cursor.close()
@@ -387,13 +287,13 @@ class PasswordManager:
                     "username": username, 
                     "password": password,
                     "notes": notes,
-                    "created": created.isoformat() if created else "",
-                    "modified": modified.isoformat() if modified else ""
+                    "created": created if created else "",
+                    "modified": modified if modified else ""
                 })
                 
             return {"passwords": passwords}
             
-        except Error as e:
+        except sqlite3.Error as e:
             print(f"Error loading passwords: {e}")
             return None
             
@@ -415,7 +315,7 @@ class PasswordManager:
             cursor = self.connection.cursor()
             cursor.execute('''
                 INSERT INTO passwords (user_id, service_name, username, encrypted_password, encrypted_notes)
-                VALUES (%s, %s, %s, %s, %s)
+                VALUES (?, ?, ?, ?, ?)
             ''', (self.user_id, service, username, encrypted_password, encrypted_notes))
             self.connection.commit()
             cursor.close()
@@ -425,7 +325,7 @@ class PasswordManager:
             # Reload data to include new entry
             return self.load_user_passwords(master_password)
             
-        except Error as e:
+        except sqlite3.Error as e:
             print(f"Error saving password: {e}")
             return data
         
@@ -594,8 +494,8 @@ class PasswordManager:
             try:
                 cursor = self.connection.cursor()
                 cursor.execute('''
-                    UPDATE passwords SET encrypted_notes = %s, modified_at = CURRENT_TIMESTAMP
-                    WHERE user_id = %s AND service_name = %s AND username = %s
+                    UPDATE passwords SET encrypted_notes = ?, modified_at = CURRENT_TIMESTAMP
+                    WHERE user_id = ? AND service_name = ? AND username = ?
                 ''', (encrypted_notes, self.user_id, entry['service'], entry['username']))
                 self.connection.commit()
                 cursor.close()
@@ -603,7 +503,7 @@ class PasswordManager:
                 entry['notes'] = new_notes.strip()
                 entry['modified'] = datetime.datetime.now().isoformat()
                 stdscr.addstr(8, 2, "Notes updated successfully!")
-            except Error as e:
+            except sqlite3.Error as e:
                 stdscr.addstr(8, 2, f"Error updating notes: {e}")
         else:
             stdscr.addstr(8, 2, "Notes unchanged.")
@@ -646,18 +546,18 @@ class PasswordManager:
             params = []
             
             if new_service.strip():
-                updates.append("service_name = %s")
+                updates.append("service_name = ?")
                 params.append(new_service.strip())
                 entry['service'] = new_service.strip()
                 
             if new_username.strip():
-                updates.append("username = %s") 
+                updates.append("username = ?") 
                 params.append(new_username.strip())
                 entry['username'] = new_username.strip()
                 
             if new_password.strip():
                 encrypted_password = self._encrypt_data(new_password.strip(), master_password)
-                updates.append("encrypted_password = %s")
+                updates.append("encrypted_password = ?")
                 params.append(encrypted_password)
                 entry['password'] = new_password.strip()
             
@@ -665,7 +565,7 @@ class PasswordManager:
                 updates.append("modified_at = CURRENT_TIMESTAMP")
                 params.extend([self.user_id, entry['service'], entry['username']])
                 
-                query = f"UPDATE passwords SET {', '.join(updates)} WHERE user_id = %s AND service_name = %s AND username = %s"
+                query = f"UPDATE passwords SET {', '.join(updates)} WHERE user_id = ? AND service_name = ? AND username = ?"
                 cursor.execute(query, params)
                 self.connection.commit()
                 
@@ -676,7 +576,7 @@ class PasswordManager:
                 
             cursor.close()
             
-        except Error as e:
+        except sqlite3.Error as e:
             stdscr.addstr(8, 2, f"Error updating entry: {e}")
         
         stdscr.addstr(9, 2, "Press any key to continue...")
@@ -752,7 +652,7 @@ class PasswordManager:
             
         # Check if user exists
         cursor = self.connection.cursor()
-        cursor.execute("SELECT COUNT(*) FROM users WHERE username = %s", (username,))
+        cursor.execute("SELECT COUNT(*) FROM users WHERE username = ?", (username,))
         user_exists = cursor.fetchone()[0] > 0
         cursor.close()
         

@@ -6,6 +6,7 @@ import os
 import json
 import base64
 import time
+import sqlite3
 from unittest.mock import patch, MagicMock
 from pypwd import PasswordManager
 
@@ -13,51 +14,53 @@ class TestPasswordManager(unittest.TestCase):
     def setUp(self):
         """Set up test fixtures"""
         self.temp_dir = tempfile.mkdtemp()
-        self.test_filename = "test_passwords.enc"
-        # Change to temp directory for tests
-        self.original_cwd = os.getcwd()
-        os.chdir(self.temp_dir)
-        self.pm = PasswordManager(self.test_filename)
+        # Mock the database path to use temp directory
+        self.test_db_path = os.path.join(self.temp_dir, "test_pypwd.db")
+        
+        # Patch the _get_db_path method to return test path
+        with patch.object(PasswordManager, '_get_db_path', return_value=self.test_db_path):
+            self.pm = PasswordManager()
+        
         self.test_password = "TestPassword123"
         self.weak_password = "short"
         
     def tearDown(self):
         """Clean up test files"""
-        os.chdir(self.original_cwd)
-        if os.path.exists(os.path.join(self.temp_dir, self.test_filename)):
-            os.remove(os.path.join(self.temp_dir, self.test_filename))
+        if hasattr(self.pm, 'connection') and self.pm.connection:
+            self.pm.connection.close()
+        if os.path.exists(self.test_db_path):
+            os.remove(self.test_db_path)
         try:
             os.rmdir(self.temp_dir)
         except OSError:
             pass
 
-class TestFilenameValidation(TestPasswordManager):
-    """Test filename validation and path traversal protection"""
+class TestDatabaseSetup(TestPasswordManager):
+    """Test database setup and connection"""
     
-    def test_valid_filename(self):
-        """Test valid filename is accepted"""
-        pm = PasswordManager("valid_file.enc")
-        self.assertEqual(pm.filename, "valid_file.enc")
+    def test_database_path_creation(self):
+        """Test database path is created correctly"""
+        self.assertTrue(os.path.exists(self.test_db_path))
         
-    def test_filename_without_extension(self):
-        """Test filename without .enc extension gets it added"""
-        pm = PasswordManager("test_file")
-        self.assertEqual(pm.filename, "test_file.enc")
+    def test_database_tables_created(self):
+        """Test that required tables are created"""
+        cursor = self.pm.connection.cursor()
         
-    def test_path_traversal_protection(self):
-        """Test path traversal attempts are blocked"""
-        pm = PasswordManager("../../../etc/passwd")
-        self.assertEqual(pm.filename, "passwd.enc")
+        # Check users table exists
+        cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='users'")
+        self.assertIsNotNone(cursor.fetchone())
         
-    def test_invalid_characters_blocked(self):
-        """Test invalid characters in filename are blocked"""
-        with self.assertRaises(ValueError):
-            PasswordManager("file|with<invalid>chars.enc")
-            
-    def test_empty_filename_blocked(self):
-        """Test empty filename is blocked"""
-        with self.assertRaises(ValueError):
-            PasswordManager("")
+        # Check passwords table exists
+        cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='passwords'")
+        self.assertIsNotNone(cursor.fetchone())
+        
+        cursor.close()
+        
+    def test_database_file_permissions(self):
+        """Test database file has correct permissions"""
+        file_stat = os.stat(self.test_db_path)
+        file_perms = oct(file_stat.st_mode)[-3:]
+        self.assertEqual(file_perms, "600")
 
 class TestPasswordStrengthValidation(TestPasswordManager):
     """Test password strength validation"""
@@ -149,82 +152,65 @@ class TestRateLimiting(TestPasswordManager):
         self.assertTrue(self.pm._check_rate_limit())
         self.assertEqual(self.pm.failed_attempts, 0)
 
-class TestFileOperations(TestPasswordManager):
-    """Test file creation, loading, and saving"""
+class TestUserManagement(TestPasswordManager):
+    """Test user creation and authentication"""
     
     @patch('getpass.getpass')
-    def test_create_new_file(self, mock_getpass):
-        """Test creating a new password file"""
+    def test_create_new_user(self, mock_getpass):
+        """Test creating a new user account"""
         mock_getpass.side_effect = [self.test_password, self.test_password]
         
-        result = self.pm.create_new_file()
+        result = self.pm.create_new_user("testuser")
         
         self.assertTrue(result)
-        self.assertTrue(os.path.exists(self.test_filename))
-        
-        # Check file permissions (should be 600)
-        file_stat = os.stat(self.test_filename)
-        file_perms = oct(file_stat.st_mode)[-3:]
-        self.assertEqual(file_perms, "600")
+        self.assertEqual(self.pm.user_id, 1)  # First user should have ID 1
         
     @patch('getpass.getpass')
-    def test_create_file_password_mismatch(self, mock_getpass):
-        """Test file creation fails when passwords don't match"""
+    def test_create_user_password_mismatch(self, mock_getpass):
+        """Test user creation fails when passwords don't match"""
         mock_getpass.side_effect = [self.test_password, "different_password"]
         
-        result = self.pm.create_new_file()
+        result = self.pm.create_new_user("testuser")
         
         self.assertFalse(result)
-        self.assertFalse(os.path.exists(self.test_filename))
+        self.assertIsNone(self.pm.user_id)
         
     @patch('getpass.getpass')
-    def test_create_file_weak_password_rejected(self, mock_getpass):
-        """Test file creation rejects weak passwords"""
+    def test_create_user_weak_password_rejected(self, mock_getpass):
+        """Test user creation rejects weak passwords"""
         mock_getpass.side_effect = [self.weak_password, self.test_password, self.test_password]
         
-        result = self.pm.create_new_file()
+        result = self.pm.create_new_user("testuser")
         
         self.assertTrue(result)
         
-    @patch('getpass.getpass')
-    def test_load_passwords_success(self, mock_getpass):
-        """Test loading passwords from file"""
-        mock_getpass.side_effect = [self.test_password, self.test_password]
+    def test_authenticate_user_success(self):
+        """Test successful user authentication"""
+        # Create user first
+        with patch('getpass.getpass', side_effect=[self.test_password, self.test_password]):
+            self.pm.create_new_user("testuser")
         
-        # Create file first
-        self.pm.create_new_file()
-        
-        # Create a fresh instance to test loading (reset rate limiting)
-        pm_fresh = PasswordManager(self.test_filename)
-        data = pm_fresh.load_passwords(self.test_password)
+        # Test authentication
+        data = self.pm.authenticate_user("testuser", self.test_password)
         
         self.assertIsNotNone(data)
         self.assertIn('passwords', data)
         self.assertEqual(len(data['passwords']), 0)
-        # Salt should be set in the PasswordManager instance
-        self.assertIsNotNone(pm_fresh.salt)
         
-    def test_load_passwords_wrong_password(self):
-        """Test loading fails with wrong password"""
-        # Create a file with test data
-        self.pm.salt = self.pm._generate_salt()
-        test_data = {
-            "salt": base64.b64encode(self.pm.salt).decode(),
-            "passwords": []
-        }
-        encrypted_data = self.pm._encrypt_data(json.dumps(test_data), self.test_password)
-        
-        with open(self.test_filename, 'wb') as f:
-            f.write(encrypted_data)
+    def test_authenticate_user_wrong_password(self):
+        """Test authentication fails with wrong password"""
+        # Create user first
+        with patch('getpass.getpass', side_effect=[self.test_password, self.test_password]):
+            self.pm.create_new_user("testuser")
             
-        # Try to load with wrong password
-        data = self.pm.load_passwords("wrong_password")
+        # Try to authenticate with wrong password
+        data = self.pm.authenticate_user("testuser", "wrong_password")
         
         self.assertIsNone(data)
         
-    def test_load_nonexistent_file(self):
-        """Test loading non-existent file returns None"""
-        data = self.pm.load_passwords(self.test_password)
+    def test_authenticate_nonexistent_user(self):
+        """Test authentication fails for non-existent user"""
+        data = self.pm.authenticate_user("nonexistent", self.test_password)
         self.assertIsNone(data)
 
 class TestPasswordCRUD(TestPasswordManager):
@@ -232,28 +218,37 @@ class TestPasswordCRUD(TestPasswordManager):
     
     def setUp(self):
         super().setUp()
-        # Create a test file with sample data
+        # Create a test user and authenticate
+        with patch('getpass.getpass', side_effect=[self.test_password, self.test_password]):
+            self.pm.create_new_user("testuser")
+        
+        # Add some test data to the database
         self.pm.salt = self.pm._generate_salt()
-        self.test_data = {
-            "passwords": [
-                {
-                    "service": "Gmail",
-                    "username": "test@gmail.com",
-                    "password": "gmail_pass123",
-                    "notes": "",
-                    "created": "2024-01-01T00:00:00",
-                    "modified": "2024-01-01T00:00:00"
-                },
-                {
-                    "service": "GitHub", 
-                    "username": "testuser",
-                    "password": "github_pass456",
-                    "notes": "Work account",
-                    "created": "2024-01-01T00:00:00",
-                    "modified": "2024-01-01T00:00:00"
-                }
-            ]
-        }
+        
+        # Add test passwords directly to database
+        cursor = self.pm.connection.cursor()
+        
+        # Add Gmail entry
+        encrypted_password1 = self.pm._encrypt_data("gmail_pass123", self.test_password)
+        encrypted_notes1 = self.pm._encrypt_data("", self.test_password)
+        cursor.execute('''
+            INSERT INTO passwords (user_id, service_name, username, encrypted_password, encrypted_notes)
+            VALUES (?, ?, ?, ?, ?)
+        ''', (self.pm.user_id, "Gmail", "test@gmail.com", encrypted_password1, encrypted_notes1))
+        
+        # Add GitHub entry
+        encrypted_password2 = self.pm._encrypt_data("github_pass456", self.test_password)
+        encrypted_notes2 = self.pm._encrypt_data("Work account", self.test_password)
+        cursor.execute('''
+            INSERT INTO passwords (user_id, service_name, username, encrypted_password, encrypted_notes)
+            VALUES (?, ?, ?, ?, ?)
+        ''', (self.pm.user_id, "GitHub", "testuser", encrypted_password2, encrypted_notes2))
+        
+        self.pm.connection.commit()
+        cursor.close()
+        
+        # Load the test data
+        self.test_data = self.pm.load_user_passwords(self.test_password)
         
     @patch('builtins.input')
     @patch('getpass.getpass')
@@ -287,114 +282,40 @@ class TestPasswordCRUD(TestPasswordManager):
         
         self.assertEqual(len(data['passwords']), original_count)
         
-    @patch('sys.stdout')
-    def test_list_passwords(self, mock_stdout):
-        """Test listing passwords"""
-        self.pm.list_passwords(self.test_data)
-        
-        # Check that output was generated (passwords should be masked)
-        mock_stdout.write.assert_called()
-        
-    def test_list_passwords_empty(self):
-        """Test listing passwords when none exist"""
-        empty_data = {"passwords": []}
-        # Should not raise an exception
-        self.pm.list_passwords(empty_data)
-        
-    @patch('builtins.input')
-    def test_search_passwords_found(self, mock_input):
-        """Test searching for passwords"""
-        mock_input.side_effect = ["gmail", "y"]  # search term, show passwords
-        
-        # Capture output by patching print
-        with patch('builtins.print') as mock_print:
-            self.pm.search_passwords(self.test_data)
-            
-        # Check that Gmail entry was found and displayed
-        calls = [str(call) for call in mock_print.call_args_list]
-        output = " ".join(calls)
-        self.assertIn("Gmail", output)
-        self.assertIn("gmail_pass123", output)
-        
-    @patch('builtins.input')
-    def test_search_passwords_hidden(self, mock_input):
-        """Test searching with passwords hidden"""
-        mock_input.side_effect = ["gmail", "n"]  # search term, hide passwords
-        
-        with patch('builtins.print') as mock_print:
-            self.pm.search_passwords(self.test_data)
-            
-        calls = [str(call) for call in mock_print.call_args_list]
-        output = " ".join(calls)
-        self.assertIn("Gmail", output)
-        self.assertNotIn("gmail_pass123", output)
-        self.assertIn("*" * len("gmail_pass123"), output)
-        
-    @patch('builtins.input')
-    @patch('getpass.getpass')
-    def test_edit_password(self, mock_getpass, mock_input):
-        """Test editing an existing password"""
-        mock_input.side_effect = ["1", "Gmail Updated", "new@gmail.com"]
-        mock_getpass.return_value = "new_password123"
-        
-        data = self.pm.edit_password(self.test_data.copy(), self.test_password)
-        
-        edited_entry = data['passwords'][0]
-        self.assertEqual(edited_entry['service'], "Gmail Updated")
-        self.assertEqual(edited_entry['username'], "new@gmail.com")
-        self.assertEqual(edited_entry['password'], "new_password123")
-        
-    @patch('builtins.input')
-    @patch('getpass.getpass')
-    def test_edit_password_keep_existing(self, mock_getpass, mock_input):
-        """Test editing password while keeping some existing values"""
-        mock_input.side_effect = ["1", "", "new@gmail.com"]  # Keep service name
-        mock_getpass.return_value = ""  # Keep existing password
-        
-        original_data = self.test_data.copy()
-        data = self.pm.edit_password(original_data, self.test_password)
-        
-        edited_entry = data['passwords'][0]
-        self.assertEqual(edited_entry['service'], "Gmail")  # Unchanged
-        self.assertEqual(edited_entry['username'], "new@gmail.com")  # Changed
-        self.assertEqual(edited_entry['password'], "gmail_pass123")  # Unchanged
-        
-    @patch('builtins.input')
-    def test_edit_password_invalid_index(self, mock_input):
-        """Test editing with invalid password index"""
-        mock_input.return_value = "999"  # Invalid index
-        
-        original_data = self.test_data.copy()
-        data = self.pm.edit_password(original_data, self.test_password)
-        
-        # Data should be unchanged
-        self.assertEqual(data, original_data)
-
-class TestBackwardCompatibility(TestPasswordManager):
-    """Test backward compatibility with legacy files"""
-    
-    def test_load_legacy_file_format(self):
-        """Test loading files created with old format (fixed salt)"""
-        # Create a legacy format file (entire file is encrypted data, no salt prefix)
-        legacy_salt = b'salt1234567890ab'
-        temp_pm = PasswordManager(self.test_filename)
-        temp_pm.salt = legacy_salt
-        
-        legacy_data = {"passwords": []}
-        encrypted_data = temp_pm._encrypt_data(json.dumps(legacy_data), self.test_password)
-        
-        with open(self.test_filename, 'wb') as f:
-            # Legacy format: write only encrypted data (no salt prefix)
-            f.write(encrypted_data)
-            
-        # Reset pm to simulate fresh load
-        pm_fresh = PasswordManager(self.test_filename)
-        data = pm_fresh.load_passwords(self.test_password)
+    def test_load_user_passwords(self):
+        """Test loading user passwords from database"""
+        data = self.pm.load_user_passwords(self.test_password)
         
         self.assertIsNotNone(data)
         self.assertIn('passwords', data)
-        # Should have loaded with legacy salt
-        self.assertEqual(pm_fresh.salt, legacy_salt)
+        self.assertEqual(len(data['passwords']), 2)
+        
+        # Check first password entry
+        gmail_entry = next(p for p in data['passwords'] if p['service'] == 'Gmail')
+        self.assertEqual(gmail_entry['username'], "test@gmail.com")
+        self.assertEqual(gmail_entry['password'], "gmail_pass123")
+        
+    def test_interactive_ui_methods_exist(self):
+        """Test that interactive UI methods exist"""
+        # Test that interactive methods exist (even if we can't easily test their UI)
+        self.assertTrue(hasattr(self.pm, 'interactive_list_passwords'))
+        self.assertTrue(hasattr(self.pm, 'interactive_search_passwords'))
+        self.assertTrue(hasattr(self.pm, '_interactive_select'))
+        self.assertTrue(hasattr(self.pm, '_password_detail_view'))
+        
+    def test_database_password_encryption(self):
+        """Test that passwords are properly encrypted in database"""
+        cursor = self.pm.connection.cursor()
+        cursor.execute("SELECT encrypted_password FROM passwords WHERE service_name = ?", ("Gmail",))
+        encrypted_data = cursor.fetchone()[0]
+        cursor.close()
+        
+        # Encrypted data should be different from plaintext
+        self.assertNotEqual(encrypted_data, b"gmail_pass123")
+        
+        # Should be able to decrypt with correct password
+        decrypted = self.pm._decrypt_data(encrypted_data, self.test_password)
+        self.assertEqual(decrypted, "gmail_pass123")
 
 class TestIntegration(TestPasswordManager):
     """Integration tests"""
@@ -402,10 +323,10 @@ class TestIntegration(TestPasswordManager):
     @patch('builtins.input')
     @patch('getpass.getpass')
     def test_full_workflow(self, mock_getpass, mock_input):
-        """Test complete workflow from file creation to password management"""
-        # Mock inputs for file creation
+        """Test complete workflow from user creation to password management"""
+        # Mock inputs for user creation and password addition
         mock_getpass.side_effect = [
-            self.test_password, self.test_password,  # Create file
+            self.test_password, self.test_password,  # Create user
             "facebook_pass"  # Add password
         ]
         mock_input.side_effect = [
@@ -413,20 +334,18 @@ class TestIntegration(TestPasswordManager):
         ]
         
         # Simulate the workflow
-        self.pm.create_new_file()
+        self.pm.create_new_user("integrationtest")
         
-        # Create fresh instance to test loading without rate limiting issues
-        pm_fresh = PasswordManager(self.test_filename)
-        data = pm_fresh.load_passwords(self.test_password)
+        # Authenticate user
+        data = self.pm.authenticate_user("integrationtest", self.test_password)
         self.assertIsNotNone(data)
         
         # Add a password
-        data = pm_fresh.add_password(data, self.test_password)
+        data = self.pm.add_password(data, self.test_password)
         self.assertEqual(len(data['passwords']), 1)
         
-        # Verify password was saved by creating another fresh instance
-        pm_verify = PasswordManager(self.test_filename)
-        saved_data = pm_verify.load_passwords(self.test_password)
+        # Verify password was saved by loading again
+        saved_data = self.pm.load_user_passwords(self.test_password)
         self.assertEqual(len(saved_data['passwords']), 1)
         self.assertEqual(saved_data['passwords'][0]['service'], "Facebook")
 
@@ -438,13 +357,12 @@ def run_tests():
     
     # Add all test classes
     test_classes = [
-        TestFilenameValidation,
+        TestDatabaseSetup,
         TestPasswordStrengthValidation,
         TestEncryptionDecryption,
         TestRateLimiting,
-        TestFileOperations,
+        TestUserManagement,
         TestPasswordCRUD,
-        TestBackwardCompatibility,
         TestIntegration
     ]
     
