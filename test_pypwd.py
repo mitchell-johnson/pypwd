@@ -235,17 +235,22 @@ class TestPasswordCRUD(TestPasswordManager):
         # Create a test file with sample data
         self.pm.salt = self.pm._generate_salt()
         self.test_data = {
-            "salt": base64.b64encode(self.pm.salt).decode(),
             "passwords": [
                 {
                     "service": "Gmail",
                     "username": "test@gmail.com",
-                    "password": "gmail_pass123"
+                    "password": "gmail_pass123",
+                    "notes": "",
+                    "created": "2024-01-01T00:00:00",
+                    "modified": "2024-01-01T00:00:00"
                 },
                 {
-                    "service": "GitHub",
+                    "service": "GitHub", 
                     "username": "testuser",
-                    "password": "github_pass456"
+                    "password": "github_pass456",
+                    "notes": "Work account",
+                    "created": "2024-01-01T00:00:00",
+                    "modified": "2024-01-01T00:00:00"
                 }
             ]
         }
@@ -265,6 +270,10 @@ class TestPasswordCRUD(TestPasswordManager):
         self.assertEqual(new_entry['service'], "Facebook")
         self.assertEqual(new_entry['username'], "user@facebook.com")
         self.assertEqual(new_entry['password'], "facebook_pass789")
+        # Check new fields are present
+        self.assertIn('notes', new_entry)
+        self.assertIn('created', new_entry) 
+        self.assertIn('modified', new_entry)
         
     @patch('builtins.input')
     @patch('getpass.getpass')

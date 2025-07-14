@@ -7,6 +7,8 @@ import getpass
 import secrets
 import time
 import re
+import curses
+import datetime
 from pathlib import Path
 from cryptography.fernet import Fernet, InvalidToken
 from cryptography.hazmat.primitives import hashes
@@ -196,7 +198,10 @@ class PasswordManager:
         new_entry = {
             "service": service,
             "username": username,
-            "password": password
+            "password": password,
+            "notes": "",
+            "created": datetime.datetime.now().isoformat(),
+            "modified": datetime.datetime.now().isoformat()
         }
         
         data["passwords"].append(new_entry)
@@ -285,10 +290,278 @@ class PasswordManager:
         if new_password:
             entry["password"] = new_password
             
+        # Update modification time
+        entry["modified"] = datetime.datetime.now().isoformat()
+            
         data["passwords"][entry_index] = entry
         self.save_passwords(data, master_password)
         print("Password entry updated successfully!")
         return data
+        
+    def _interactive_select(self, stdscr, items, title="Select an item"):
+        """Interactive selection using arrow keys"""
+        curses.curs_set(0)  # Hide cursor
+        stdscr.clear()
+        
+        current_row = 0
+        max_row = len(items) - 1
+        
+        while True:
+            stdscr.clear()
+            height, width = stdscr.getmaxyx()
+            
+            # Display title
+            title_x = max(0, (width - len(title)) // 2)
+            stdscr.addstr(0, title_x, title, curses.A_BOLD)
+            stdscr.addstr(1, 0, "=" * min(width - 1, len(title)))
+            
+            # Display items
+            start_row = 3
+            for idx, item in enumerate(items):
+                y = start_row + idx
+                if y >= height - 2:  # Leave space for instructions
+                    break
+                    
+                if idx == current_row:
+                    stdscr.addstr(y, 2, f"> {item}", curses.A_REVERSE)
+                else:
+                    stdscr.addstr(y, 4, item)
+            
+            # Display instructions
+            instructions = "↑↓: Navigate | Enter: Select | q: Back"
+            stdscr.addstr(height - 2, 0, instructions[:width-1])
+            
+            stdscr.refresh()
+            
+            key = stdscr.getch()
+            
+            if key == curses.KEY_UP and current_row > 0:
+                current_row -= 1
+            elif key == curses.KEY_DOWN and current_row < max_row:
+                current_row += 1
+            elif key == ord('\n') or key == ord('\r'):
+                return current_row
+            elif key == ord('q'):
+                return None
+                
+    def _password_detail_view(self, stdscr, entry, data, master_password):
+        """Detailed view for a selected password entry"""
+        while True:
+            stdscr.clear()
+            height, width = stdscr.getmaxyx()
+            
+            # Display entry details
+            title = f"Password Details: {entry['service']}"
+            title_x = max(0, (width - len(title)) // 2)
+            stdscr.addstr(0, title_x, title, curses.A_BOLD)
+            stdscr.addstr(1, 0, "=" * min(width - 1, len(title)))
+            
+            details = [
+                f"Service: {entry['service']}",
+                f"Username: {entry['username']}",
+                f"Password: {'*' * len(entry['password'])}",
+                f"Notes: {entry.get('notes', 'N/A')}",
+                f"Created: {entry.get('created', 'N/A')}",
+                f"Modified: {entry.get('modified', 'N/A')}"
+            ]
+            
+            for i, detail in enumerate(details):
+                stdscr.addstr(3 + i, 2, detail[:width-3])
+            
+            # Display options
+            options = [
+                "1. Show password in cleartext",
+                "2. Export to file",
+                "3. Add/Edit notes",
+                "4. Edit entry",
+                "5. Back to list"
+            ]
+            
+            start_y = 3 + len(details) + 2
+            stdscr.addstr(start_y, 0, "Options:", curses.A_BOLD)
+            for i, option in enumerate(options):
+                stdscr.addstr(start_y + 1 + i, 2, option)
+            
+            stdscr.addstr(height - 2, 0, "Enter option (1-5): ")
+            stdscr.refresh()
+            
+            # Get user input
+            curses.echo()
+            choice = stdscr.getstr(height - 2, 19, 1).decode('utf-8')
+            curses.noecho()
+            
+            if choice == '1':
+                self._show_password_cleartext(stdscr, entry)
+            elif choice == '2':
+                self._export_password_to_file(stdscr, entry)
+            elif choice == '3':
+                self._edit_notes(stdscr, entry, data, master_password)
+            elif choice == '4':
+                self._edit_entry_interactive(stdscr, entry, data, master_password)
+            elif choice == '5':
+                break
+                
+    def _show_password_cleartext(self, stdscr, entry):
+        """Display password in cleartext with warning"""
+        stdscr.clear()
+        height, width = stdscr.getmaxyx()
+        
+        warning = "⚠️  PASSWORD VISIBLE ON SCREEN  ⚠️"
+        warning_x = max(0, (width - len(warning)) // 2)
+        stdscr.addstr(1, warning_x, warning, curses.A_BOLD | curses.A_BLINK)
+        
+        stdscr.addstr(3, 2, f"Service: {entry['service']}")
+        stdscr.addstr(4, 2, f"Username: {entry['username']}")
+        stdscr.addstr(5, 2, f"Password: {entry['password']}", curses.A_BOLD)
+        
+        stdscr.addstr(height - 3, 0, "Press any key to hide password and return...")
+        stdscr.refresh()
+        stdscr.getch()
+        
+    def _export_password_to_file(self, stdscr, entry):
+        """Export single password entry to text file"""
+        filename = f"{entry['service']}_password.txt"
+        try:
+            with open(filename, 'w') as f:
+                f.write(f"Service: {entry['service']}\n")
+                f.write(f"Username: {entry['username']}\n")
+                f.write(f"Password: {entry['password']}\n")
+                f.write(f"Notes: {entry.get('notes', '')}\n")
+                f.write(f"Exported: {datetime.datetime.now().isoformat()}\n")
+            
+            stdscr.clear()
+            stdscr.addstr(2, 2, f"Password exported to: {filename}")
+            stdscr.addstr(4, 2, "Press any key to continue...")
+            stdscr.refresh()
+            stdscr.getch()
+        except Exception as e:
+            stdscr.clear()
+            stdscr.addstr(2, 2, f"Error exporting: {str(e)}")
+            stdscr.addstr(4, 2, "Press any key to continue...")
+            stdscr.refresh()
+            stdscr.getch()
+            
+    def _edit_notes(self, stdscr, entry, data, master_password):
+        """Edit notes for an entry"""
+        stdscr.clear()
+        height, width = stdscr.getmaxyx()
+        
+        stdscr.addstr(1, 2, f"Edit notes for: {entry['service']}", curses.A_BOLD)
+        stdscr.addstr(3, 2, f"Current notes: {entry.get('notes', '')}")
+        stdscr.addstr(5, 2, "New notes (leave blank to keep current):")
+        
+        curses.echo()
+        curses.curs_set(1)
+        new_notes = stdscr.getstr(6, 2, width - 4).decode('utf-8')
+        curses.noecho()
+        curses.curs_set(0)
+        
+        if new_notes.strip():
+            entry['notes'] = new_notes.strip()
+            entry['modified'] = datetime.datetime.now().isoformat()
+            self.save_passwords(data, master_password)
+            
+            stdscr.addstr(8, 2, "Notes updated successfully!")
+        else:
+            stdscr.addstr(8, 2, "Notes unchanged.")
+            
+        stdscr.addstr(9, 2, "Press any key to continue...")
+        stdscr.refresh()
+        stdscr.getch()
+        
+    def _edit_entry_interactive(self, stdscr, entry, data, master_password):
+        """Interactive entry editing"""
+        stdscr.clear()
+        height, width = stdscr.getmaxyx()
+        
+        stdscr.addstr(1, 2, f"Edit entry: {entry['service']}", curses.A_BOLD)
+        stdscr.addstr(2, 2, "Leave fields blank to keep current values")
+        
+        # Edit service
+        stdscr.addstr(4, 2, f"Service [{entry['service']}]: ")
+        curses.echo()
+        curses.curs_set(1)
+        new_service = stdscr.getstr(4, 4 + len(f"Service [{entry['service']}]: "), width - 6).decode('utf-8')
+        
+        # Edit username  
+        stdscr.addstr(5, 2, f"Username [{entry['username']}]: ")
+        new_username = stdscr.getstr(5, 4 + len(f"Username [{entry['username']}]: "), width - 6).decode('utf-8')
+        
+        # Edit password
+        stdscr.addstr(6, 2, "New password (leave blank to keep current): ")
+        curses.noecho()
+        new_password = stdscr.getstr(6, 4 + len("New password (leave blank to keep current): "), width - 6).decode('utf-8')
+        curses.echo()
+        curses.curs_set(0)
+        
+        # Update entry
+        if new_service.strip():
+            entry['service'] = new_service.strip()
+        if new_username.strip():
+            entry['username'] = new_username.strip()
+        if new_password.strip():
+            entry['password'] = new_password.strip()
+            
+        entry['modified'] = datetime.datetime.now().isoformat()
+        self.save_passwords(data, master_password)
+        
+        stdscr.addstr(8, 2, "Entry updated successfully!")
+        stdscr.addstr(9, 2, "Press any key to continue...")
+        stdscr.refresh()
+        stdscr.getch()
+        
+    def interactive_list_passwords(self, data, master_password):
+        """Interactive password listing with arrow key navigation"""
+        if not data["passwords"]:
+            print("\nNo passwords stored.")
+            return
+            
+        def list_ui(stdscr):
+            entries = data["passwords"]
+            items = [f"{entry['service']} ({entry['username']})" for entry in entries]
+            
+            while True:
+                selected_idx = self._interactive_select(stdscr, items, "Password List")
+                if selected_idx is None:
+                    break
+                    
+                selected_entry = entries[selected_idx]
+                self._password_detail_view(stdscr, selected_entry, data, master_password)
+                
+        curses.wrapper(list_ui)
+        
+    def interactive_search_passwords(self, data, master_password):
+        """Interactive password search with arrow key navigation"""
+        if not data["passwords"]:
+            print("\nNo passwords stored.")
+            return
+            
+        query = input("\nEnter search term (service/username): ").strip().lower()
+        if not query:
+            return
+            
+        matches = []
+        for entry in data["passwords"]:
+            if (query in entry["service"].lower() or 
+                query in entry["username"].lower()):
+                matches.append(entry)
+                
+        if not matches:
+            print("No matches found.")
+            return
+            
+        def search_ui(stdscr):
+            items = [f"{entry['service']} ({entry['username']})" for entry in matches]
+            
+            while True:
+                selected_idx = self._interactive_select(stdscr, items, f"Search Results: '{query}'")
+                if selected_idx is None:
+                    break
+                    
+                selected_entry = matches[selected_idx]
+                self._password_detail_view(stdscr, selected_entry, data, master_password)
+                
+        curses.wrapper(search_ui)
             
     def run(self):
         if not os.path.exists(self.filename):
@@ -318,22 +591,28 @@ class PasswordManager:
         while True:
             print("\nOptions:")
             print("1. Add password")
-            print("2. List passwords") 
-            print("3. Search passwords")
-            print("4. Edit password")
-            print("5. Exit")
+            print("2. List passwords (interactive)") 
+            print("3. Search passwords (interactive)")
+            print("4. List passwords (simple)")
+            print("5. Search passwords (simple)")
+            print("6. Edit password")
+            print("7. Exit")
             
-            choice = input("\nSelect option (1-5): ").strip()
+            choice = input("\nSelect option (1-7): ").strip()
             
             if choice == '1':
                 data = self.add_password(data, master_password)
             elif choice == '2':
-                self.list_passwords(data)
+                self.interactive_list_passwords(data, master_password)
             elif choice == '3':
-                self.search_passwords(data)
+                self.interactive_search_passwords(data, master_password)
             elif choice == '4':
-                data = self.edit_password(data, master_password)
+                self.list_passwords(data)
             elif choice == '5':
+                self.search_passwords(data)
+            elif choice == '6':
+                data = self.edit_password(data, master_password)
+            elif choice == '7':
                 print("Goodbye!")
                 break
             else:

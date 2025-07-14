@@ -55,24 +55,49 @@ Once logged in with your master password, you'll see these options:
 - Enter your password (hidden input)
 - Password is automatically encrypted and saved
 
-### 2. List Passwords
-- Shows all stored passwords
+### 2. List Passwords (Interactive)
+- Arrow key navigation through password entries
+- Press Enter to select and view detailed information
+- Interactive detail view with multiple options
+
+### 3. Search Passwords (Interactive)
+- Search by service name or username
+- Arrow key navigation through search results
+- Press Enter to select and view detailed information
+
+### 4. List Passwords (Simple)
+- Shows all stored passwords in simple text format
 - Passwords are masked with asterisks for security
 - Displays service name and username
 
-### 3. Search Passwords
-- Search by service name or username
-- Shows matching entries with actual passwords visible
+### 5. Search Passwords (Simple)
+- Search by service name or username in simple text format
+- Option to show or hide passwords in results
 - Case-insensitive search
 
-### 4. Edit Password
+### 6. Edit Password
 - Select an entry by number to edit
 - Modify service name, username, or password
 - Leave fields blank to keep current values
 - Changes are automatically encrypted and saved
 
-### 5. Exit
+### 7. Exit
 - Safely exits the program
+
+## Interactive Features
+
+When you select an entry in interactive mode, you'll see a detailed view with these options:
+
+1. **Show password in cleartext** - Display the actual password with a security warning
+2. **Export to file** - Save the password entry to a text file
+3. **Add/Edit notes** - Add or modify notes for the entry
+4. **Edit entry** - Modify service, username, or password interactively
+5. **Back to list** - Return to the password list
+
+### Navigation Controls
+- **↑↓ Arrow Keys**: Navigate through lists
+- **Enter**: Select highlighted item
+- **q**: Go back/quit current view
 
 ## Example Session
 
@@ -89,12 +114,14 @@ Password manager loaded successfully!
 
 Options:
 1. Add password
-2. List passwords
-3. Search passwords
-4. Edit password
-5. Exit
+2. List passwords (interactive)
+3. Search passwords (interactive)
+4. List passwords (simple)
+5. Search passwords (simple)
+6. Edit password
+7. Exit
 
-Select option (1-5): 1
+Select option (1-7): 1
 
 Add new password entry:
 Service/Website: gmail
@@ -114,6 +141,9 @@ Password saved successfully!
 - **Restrictive File Permissions**: Password files are set to owner-only access (600)
 - **Path Traversal Protection**: Validates filenames to prevent directory traversal attacks
 - **Secure Search**: Option to hide passwords in search results
+- **Interactive UI**: Arrow key navigation and detailed entry views
+- **Notes Support**: Add notes and timestamps to password entries
+- **Export Functionality**: Export individual passwords to text files
 - **Local Storage Only**: Passwords never leave your local machine
 
 ## File Format
