@@ -9,6 +9,8 @@ import time
 import re
 import curses
 import datetime
+import mysql.connector
+from mysql.connector import Error
 from pathlib import Path
 from cryptography.fernet import Fernet, InvalidToken
 from cryptography.hazmat.primitives import hashes
@@ -16,31 +18,73 @@ from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
 import base64
 
 class PasswordManager:
-    def __init__(self, filename="passwords.enc"):
-        self.filename = self._validate_filename(filename)
+    def __init__(self, db_config=None):
+        # Database configuration
+        self.db_config = db_config or {
+            'host': os.getenv('PYPWD_DB_HOST', 'localhost'),
+            'port': int(os.getenv('PYPWD_DB_PORT', '3306')),
+            'user': os.getenv('PYPWD_DB_USER', 'pypwd_user'),
+            'password': os.getenv('PYPWD_DB_PASSWORD', ''),
+            'database': os.getenv('PYPWD_DB_NAME', 'pypwd')
+        }
+        
+        self.connection = None
         self.salt = None
+        self.user_id = None
         self.failed_attempts = 0
         self.last_attempt_time = 0
         self.max_attempts = 3
         self.lockout_duration = 30  # seconds
         
-    def _validate_filename(self, filename):
-        """Validate filename to prevent path traversal attacks"""
-        if not filename:
-            raise ValueError("Filename cannot be empty")
-        
-        # Remove any path components and keep only the filename
-        filename = os.path.basename(filename)
-        
-        # Check for valid characters (alphanumeric, dots, underscores, hyphens)
-        if not re.match(r'^[a-zA-Z0-9._-]+$', filename):
-            raise ValueError("Invalid characters in filename")
+    def _connect_db(self):
+        """Establish database connection"""
+        try:
+            if self.connection is None or not self.connection.is_connected():
+                self.connection = mysql.connector.connect(**self.db_config)
+                self._create_tables()
+            return True
+        except Error as e:
+            print(f"Database connection error: {e}")
+            return False
             
-        # Ensure it has .enc extension
-        if not filename.endswith('.enc'):
-            filename += '.enc'
-            
-        return filename
+    def _create_tables(self):
+        """Create necessary database tables"""
+        cursor = self.connection.cursor()
+        
+        # Users table to store master password hashes and salts
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS users (
+                id INT AUTO_INCREMENT PRIMARY KEY,
+                username VARCHAR(255) UNIQUE NOT NULL,
+                password_hash TEXT NOT NULL,
+                salt BLOB NOT NULL,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                modified_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+            )
+        ''')
+        
+        # Passwords table to store encrypted password entries
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS passwords (
+                id INT AUTO_INCREMENT PRIMARY KEY,
+                user_id INT NOT NULL,
+                service_name TEXT NOT NULL,
+                username TEXT NOT NULL,
+                encrypted_password BLOB NOT NULL,
+                encrypted_notes BLOB,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                modified_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+                FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+            )
+        ''')
+        
+        self.connection.commit()
+        cursor.close()
+        
+    def _disconnect_db(self):
+        """Close database connection"""
+        if self.connection and self.connection.is_connected():
+            self.connection.close()
         
     def _validate_password_strength(self, password):
         """Validate password meets minimum security requirements"""
@@ -70,6 +114,16 @@ class PasswordManager:
     def _generate_salt(self):
         """Generate a cryptographically secure random salt"""
         return secrets.token_bytes(32)
+        
+    def _hash_password(self, password, salt):
+        """Hash password using PBKDF2"""
+        kdf = PBKDF2HMAC(
+            algorithm=hashes.SHA256(),
+            length=64,  # Longer hash for password storage
+            salt=salt,
+            iterations=100000,
+        )
+        return base64.b64encode(kdf.derive(password.encode())).decode()
         
     def _derive_key(self, password):
         if self.salt is None:
@@ -105,8 +159,12 @@ class PasswordManager:
         except OSError:
             print("Warning: Could not set restrictive file permissions")
             
-    def create_new_file(self):
-        print("Creating new password manager file...")
+    def create_new_user(self, username):
+        """Create a new user account"""
+        if not self._connect_db():
+            return False
+            
+        print("Creating new password manager account...")
         print("Password requirements:")
         print("- At least 10 characters long")
         
@@ -124,66 +182,100 @@ class PasswordManager:
             print("Passwords don't match!")
             return False
             
-        # Generate unique salt for this file
+        # Generate unique salt for this user
         self.salt = self._generate_salt()
         
-        initial_data = {"passwords": []}
-        encrypted_data = self._encrypt_data(json.dumps(initial_data), master_password)
+        # Create password hash
+        password_hash = self._hash_password(master_password, self.salt)
         
-        with open(self.filename, 'wb') as f:
-            # Write salt first (32 bytes), then encrypted data
-            f.write(self.salt)
-            f.write(encrypted_data)
+        try:
+            cursor = self.connection.cursor()
+            cursor.execute('''
+                INSERT INTO users (username, password_hash, salt) 
+                VALUES (%s, %s, %s)
+            ''', (username, password_hash, self.salt))
+            self.connection.commit()
+            self.user_id = cursor.lastrowid
+            cursor.close()
             
-        self._set_file_permissions(self.filename)
-        print(f"Password file '{self.filename}' created successfully!")
-        return True
+            print(f"User account '{username}' created successfully!")
+            return True
+        except Error as e:
+            if "Duplicate entry" in str(e):
+                print(f"User '{username}' already exists!")
+            else:
+                print(f"Error creating user: {e}")
+            return False
         
-    def load_passwords(self, master_password):
-        if not os.path.exists(self.filename):
+    def authenticate_user(self, username, master_password):
+        """Authenticate user and load their data"""
+        if not self._connect_db():
             return None
             
-        with open(self.filename, 'rb') as f:
-            file_data = f.read()
+        try:
+            cursor = self.connection.cursor()
+            cursor.execute('''
+                SELECT id, password_hash, salt FROM users WHERE username = %s
+            ''', (username,))
+            result = cursor.fetchone()
+            cursor.close()
             
-        # Check if this is a new format file (starts with 32-byte salt)
-        if len(file_data) >= 32:
-            # Try new format: salt (32 bytes) + encrypted data
-            potential_salt = file_data[:32]
-            encrypted_data = file_data[32:]
+            if not result:
+                return None
+                
+            user_id, stored_hash, salt = result
+            self.salt = salt
             
-            self.salt = potential_salt
-            decrypted_data = self._decrypt_data(encrypted_data, master_password)
+            # Verify password
+            computed_hash = self._hash_password(master_password, salt)
+            if computed_hash == stored_hash:
+                self.user_id = user_id
+                return self.load_user_passwords(master_password)
+            return None
             
-            if decrypted_data is not None:
-                try:
-                    data = json.loads(decrypted_data)
-                    if 'passwords' in data:  # Valid new format
-                        return data
-                except json.JSONDecodeError:
-                    pass
-        
-        # Fall back to legacy format (entire file is encrypted data with fixed salt)
-        self.salt = b'salt1234567890ab'
-        decrypted_data = self._decrypt_data(file_data, master_password)
-        
-        if decrypted_data is not None:
-            try:
-                data = json.loads(decrypted_data)
-                if 'passwords' in data:  # Valid legacy format
-                    return data
-            except json.JSONDecodeError:
-                pass
-        
-        return None
+        except Error as e:
+            print(f"Authentication error: {e}")
+            return None
             
-    def save_passwords(self, data, master_password):
-        encrypted_data = self._encrypt_data(json.dumps(data, indent=2), master_password)
-        with open(self.filename, 'wb') as f:
-            # Write salt first (32 bytes), then encrypted data
-            f.write(self.salt)
-            f.write(encrypted_data)
-        self._set_file_permissions(self.filename)
+    def load_user_passwords(self, master_password):
+        """Load user's passwords from database"""
+        if not self.user_id:
+            return None
+            
+        try:
+            cursor = self.connection.cursor()
+            cursor.execute('''
+                SELECT service_name, username, encrypted_password, encrypted_notes,
+                       created_at, modified_at 
+                FROM passwords WHERE user_id = %s
+            ''', (self.user_id,))
+            results = cursor.fetchall()
+            cursor.close()
+            
+            passwords = []
+            for row in results:
+                service, username, enc_password, enc_notes, created, modified = row
+                
+                # Decrypt password and notes
+                password = self._decrypt_data(enc_password, master_password)
+                notes = ""
+                if enc_notes:
+                    notes = self._decrypt_data(enc_notes, master_password) or ""
+                
+                passwords.append({
+                    "service": service,
+                    "username": username, 
+                    "password": password,
+                    "notes": notes,
+                    "created": created.isoformat() if created else "",
+                    "modified": modified.isoformat() if modified else ""
+                })
+                
+            return {"passwords": passwords}
+            
+        except Error as e:
+            print(f"Error loading passwords: {e}")
+            return None
             
     def add_password(self, data, master_password):
         print("\nAdd new password entry:")
@@ -195,108 +287,28 @@ class PasswordManager:
             print("All fields are required!")
             return data
             
-        new_entry = {
-            "service": service,
-            "username": username,
-            "password": password,
-            "notes": "",
-            "created": datetime.datetime.now().isoformat(),
-            "modified": datetime.datetime.now().isoformat()
-        }
+        # Encrypt password and notes
+        encrypted_password = self._encrypt_data(password, master_password)
+        encrypted_notes = self._encrypt_data("", master_password)  # Empty notes initially
         
-        data["passwords"].append(new_entry)
-        self.save_passwords(data, master_password)
-        print("Password saved successfully!")
-        return data
-        
-    def list_passwords(self, data):
-        if not data["passwords"]:
-            print("\nNo passwords stored.")
-            return
-            
-        print(f"\nStored passwords ({len(data['passwords'])} entries):")
-        print("-" * 50)
-        for i, entry in enumerate(data["passwords"], 1):
-            print(f"{i}. {entry['service']}")
-            print(f"   Username: {entry['username']}")
-            print(f"   Password: {'*' * len(entry['password'])}")
-            print()
-            
-    def search_passwords(self, data):
-        if not data["passwords"]:
-            print("\nNo passwords stored.")
-            return
-            
-        query = input("\nEnter search term (service/username): ").strip().lower()
-        if not query:
-            return
-            
-        show_passwords = input("Show passwords in results? (y/n): ").lower() == 'y'
-            
-        matches = []
-        for entry in data["passwords"]:
-            if (query in entry["service"].lower() or 
-                query in entry["username"].lower()):
-                matches.append(entry)
-                
-        if not matches:
-            print("No matches found.")
-            return
-            
-        print(f"\nSearch results ({len(matches)} matches):")
-        print("-" * 50)
-        for i, entry in enumerate(matches, 1):
-            print(f"{i}. {entry['service']}")
-            print(f"   Username: {entry['username']}")
-            if show_passwords:
-                print(f"   Password: {entry['password']}")
-            else:
-                print(f"   Password: {'*' * len(entry['password'])}")
-            print()
-            
-    def edit_password(self, data, master_password):
-        if not data["passwords"]:
-            print("\nNo passwords stored.")
-            return data
-            
-        print(f"\nSelect entry to edit ({len(data['passwords'])} entries):")
-        print("-" * 50)
-        for i, entry in enumerate(data["passwords"], 1):
-            print(f"{i}. {entry['service']} ({entry['username']})")
-            
         try:
-            choice = int(input("\nEnter entry number: ").strip())
-            if choice < 1 or choice > len(data["passwords"]):
-                print("Invalid entry number!")
-                return data
-        except ValueError:
-            print("Invalid input!")
+            cursor = self.connection.cursor()
+            cursor.execute('''
+                INSERT INTO passwords (user_id, service_name, username, encrypted_password, encrypted_notes)
+                VALUES (%s, %s, %s, %s, %s)
+            ''', (self.user_id, service, username, encrypted_password, encrypted_notes))
+            self.connection.commit()
+            cursor.close()
+            
+            print("Password saved successfully!")
+            
+            # Reload data to include new entry
+            return self.load_user_passwords(master_password)
+            
+        except Error as e:
+            print(f"Error saving password: {e}")
             return data
-            
-        entry_index = choice - 1
-        entry = data["passwords"][entry_index]
         
-        print(f"\nEditing: {entry['service']}")
-        print("Leave blank to keep current value:")
-        
-        new_service = input(f"Service/Website [{entry['service']}]: ").strip()
-        new_username = input(f"Username [{entry['username']}]: ").strip()
-        new_password = getpass.getpass("New Password (leave blank to keep current): ")
-        
-        if new_service:
-            entry["service"] = new_service
-        if new_username:
-            entry["username"] = new_username
-        if new_password:
-            entry["password"] = new_password
-            
-        # Update modification time
-        entry["modified"] = datetime.datetime.now().isoformat()
-            
-        data["passwords"][entry_index] = entry
-        self.save_passwords(data, master_password)
-        print("Password entry updated successfully!")
-        return data
         
     def _interactive_select(self, stdscr, items, title="Select an item"):
         """Interactive selection using arrow keys"""
@@ -457,11 +469,22 @@ class PasswordManager:
         curses.curs_set(0)
         
         if new_notes.strip():
-            entry['notes'] = new_notes.strip()
-            entry['modified'] = datetime.datetime.now().isoformat()
-            self.save_passwords(data, master_password)
-            
-            stdscr.addstr(8, 2, "Notes updated successfully!")
+            # Update in database
+            encrypted_notes = self._encrypt_data(new_notes.strip(), master_password)
+            try:
+                cursor = self.connection.cursor()
+                cursor.execute('''
+                    UPDATE passwords SET encrypted_notes = %s, modified_at = CURRENT_TIMESTAMP
+                    WHERE user_id = %s AND service_name = %s AND username = %s
+                ''', (encrypted_notes, self.user_id, entry['service'], entry['username']))
+                self.connection.commit()
+                cursor.close()
+                
+                entry['notes'] = new_notes.strip()
+                entry['modified'] = datetime.datetime.now().isoformat()
+                stdscr.addstr(8, 2, "Notes updated successfully!")
+            except Error as e:
+                stdscr.addstr(8, 2, f"Error updating notes: {e}")
         else:
             stdscr.addstr(8, 2, "Notes unchanged.")
             
@@ -494,18 +517,48 @@ class PasswordManager:
         curses.echo()
         curses.curs_set(0)
         
-        # Update entry
-        if new_service.strip():
-            entry['service'] = new_service.strip()
-        if new_username.strip():
-            entry['username'] = new_username.strip()
-        if new_password.strip():
-            entry['password'] = new_password.strip()
+        # Update in database
+        try:
+            cursor = self.connection.cursor()
             
-        entry['modified'] = datetime.datetime.now().isoformat()
-        self.save_passwords(data, master_password)
+            # Build update query dynamically based on what changed
+            updates = []
+            params = []
+            
+            if new_service.strip():
+                updates.append("service_name = %s")
+                params.append(new_service.strip())
+                entry['service'] = new_service.strip()
+                
+            if new_username.strip():
+                updates.append("username = %s") 
+                params.append(new_username.strip())
+                entry['username'] = new_username.strip()
+                
+            if new_password.strip():
+                encrypted_password = self._encrypt_data(new_password.strip(), master_password)
+                updates.append("encrypted_password = %s")
+                params.append(encrypted_password)
+                entry['password'] = new_password.strip()
+            
+            if updates:
+                updates.append("modified_at = CURRENT_TIMESTAMP")
+                params.extend([self.user_id, entry['service'], entry['username']])
+                
+                query = f"UPDATE passwords SET {', '.join(updates)} WHERE user_id = %s AND service_name = %s AND username = %s"
+                cursor.execute(query, params)
+                self.connection.commit()
+                
+                entry['modified'] = datetime.datetime.now().isoformat()
+                stdscr.addstr(8, 2, "Entry updated successfully!")
+            else:
+                stdscr.addstr(8, 2, "No changes made.")
+                
+            cursor.close()
+            
+        except Error as e:
+            stdscr.addstr(8, 2, f"Error updating entry: {e}")
         
-        stdscr.addstr(8, 2, "Entry updated successfully!")
         stdscr.addstr(9, 2, "Press any key to continue...")
         stdscr.refresh()
         stdscr.getch()
@@ -564,10 +617,28 @@ class PasswordManager:
         curses.wrapper(search_ui)
             
     def run(self):
-        if not os.path.exists(self.filename):
-            print(f"Password file '{self.filename}' not found.")
-            if input("Create new password file? (y/n): ").lower() == 'y':
-                if not self.create_new_file():
+        print("PyPWD - Secure Password Manager")
+        print("=" * 35)
+        
+        if not self._connect_db():
+            print("Failed to connect to database. Please check your configuration.")
+            return
+            
+        # Get username
+        username = input("Username: ").strip()
+        if not username:
+            print("Username is required.")
+            return
+            
+        # Check if user exists
+        cursor = self.connection.cursor()
+        cursor.execute("SELECT COUNT(*) FROM users WHERE username = %s", (username,))
+        user_exists = cursor.fetchone()[0] > 0
+        cursor.close()
+        
+        if not user_exists:
+            if input(f"User '{username}' not found. Create new account? (y/n): ").lower() == 'y':
+                if not self.create_new_user(username):
                     return
             else:
                 return
@@ -577,10 +648,10 @@ class PasswordManager:
             return
             
         master_password = getpass.getpass("Enter master password: ")
-        data = self.load_passwords(master_password)
+        data = self.authenticate_user(username, master_password)
         
         if data is None:
-            print("Invalid master password or corrupted file!")
+            print("Invalid master password!")
             self._record_failed_attempt()
             return
             
@@ -591,14 +662,11 @@ class PasswordManager:
         while True:
             print("\nOptions:")
             print("1. Add password")
-            print("2. List passwords (interactive)") 
-            print("3. Search passwords (interactive)")
-            print("4. List passwords (simple)")
-            print("5. Search passwords (simple)")
-            print("6. Edit password")
-            print("7. Exit")
+            print("2. List passwords") 
+            print("3. Search passwords")
+            print("4. Exit")
             
-            choice = input("\nSelect option (1-7): ").strip()
+            choice = input("\nSelect option (1-4): ").strip()
             
             if choice == '1':
                 data = self.add_password(data, master_password)
@@ -607,12 +675,6 @@ class PasswordManager:
             elif choice == '3':
                 self.interactive_search_passwords(data, master_password)
             elif choice == '4':
-                self.list_passwords(data)
-            elif choice == '5':
-                self.search_passwords(data)
-            elif choice == '6':
-                data = self.edit_password(data, master_password)
-            elif choice == '7':
                 print("Goodbye!")
                 break
             else:
@@ -620,12 +682,7 @@ class PasswordManager:
 
 def main():
     try:
-        if len(sys.argv) > 1:
-            filename = sys.argv[1]
-        else:
-            filename = "passwords.enc"
-            
-        pm = PasswordManager(filename)
+        pm = PasswordManager()
         pm.run()
     except ValueError as e:
         print(f"Error: {e}")
@@ -633,6 +690,11 @@ def main():
     except KeyboardInterrupt:
         print("\nExiting...")
         sys.exit(0)
+    finally:
+        try:
+            pm._disconnect_db()
+        except:
+            pass
 
 if __name__ == "__main__":
     main()

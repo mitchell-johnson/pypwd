@@ -1,13 +1,13 @@
 # PyPWD - Python Password Manager
 
-A simple, secure command-line password manager that stores encrypted passwords in a local file.
+A simple, secure command-line password manager that stores encrypted passwords in a MySQL database.
 
 ## Features
 
-- **Encrypted Storage**: Uses PBKDF2 key derivation with Fernet encryption
-- **Master Password Protection**: Single master password secures all stored passwords
-- **Simple CLI Interface**: Easy-to-use menu-driven interface
-- **Search Functionality**: Find passwords by service name or username
+- **MySQL Database Storage**: Encrypted password storage in MySQL database
+- **User Account Management**: Multiple users can have separate encrypted vaults
+- **Individual Password Encryption**: Each password is individually encrypted
+- **Interactive UI**: Arrow key navigation and detailed entry views
 - **Secure Input**: Passwords are entered securely without echoing to terminal
 
 ## Installation
@@ -23,6 +23,29 @@ cd pypwd
 pip install -r requirements.txt
 ```
 
+3. Set up MySQL database:
+```bash
+# Create database and user
+mysql -u root -p
+```
+```sql
+CREATE DATABASE pypwd;
+CREATE USER 'pypwd_user'@'localhost' IDENTIFIED BY 'your_password';
+GRANT ALL PRIVILEGES ON pypwd.* TO 'pypwd_user'@'localhost';
+FLUSH PRIVILEGES;
+EXIT;
+```
+
+4. Configure database connection (optional):
+```bash
+# Set environment variables (optional - defaults to localhost)
+export PYPWD_DB_HOST=localhost
+export PYPWD_DB_PORT=3306
+export PYPWD_DB_USER=pypwd_user
+export PYPWD_DB_PASSWORD=your_password
+export PYPWD_DB_NAME=pypwd
+```
+
 ## Usage
 
 ### Basic Usage
@@ -30,18 +53,14 @@ pip install -r requirements.txt
 python pypwd.py
 ```
 
-### Custom Password File
-```bash
-python pypwd.py my_passwords.enc
-```
-
 ## First Time Setup
 
-When you run the program for the first time, it will guide you through creating a new encrypted password file:
+When you run the program for the first time:
 
-1. The program will ask if you want to create a new password file
-2. Set your master password (this encrypts all your stored passwords)
-3. Confirm your master password
+1. Enter a username for your account
+2. If the username doesn't exist, you'll be prompted to create a new account
+3. Set your master password (this encrypts all your stored passwords)
+4. Confirm your master password
 
 **Important**: Remember your master password! There is no way to recover it if forgotten.
 
@@ -55,33 +74,17 @@ Once logged in with your master password, you'll see these options:
 - Enter your password (hidden input)
 - Password is automatically encrypted and saved
 
-### 2. List Passwords (Interactive)
+### 2. List Passwords
 - Arrow key navigation through password entries
 - Press Enter to select and view detailed information
 - Interactive detail view with multiple options
 
-### 3. Search Passwords (Interactive)
+### 3. Search Passwords
 - Search by service name or username
 - Arrow key navigation through search results
 - Press Enter to select and view detailed information
 
-### 4. List Passwords (Simple)
-- Shows all stored passwords in simple text format
-- Passwords are masked with asterisks for security
-- Displays service name and username
-
-### 5. Search Passwords (Simple)
-- Search by service name or username in simple text format
-- Option to show or hide passwords in results
-- Case-insensitive search
-
-### 6. Edit Password
-- Select an entry by number to edit
-- Modify service name, username, or password
-- Leave fields blank to keep current values
-- Changes are automatically encrypted and saved
-
-### 7. Exit
+### 4. Exit
 - Safely exits the program
 
 ## Interactive Features
@@ -103,25 +106,25 @@ When you select an entry in interactive mode, you'll see a detailed view with th
 
 ```
 $ python pypwd.py
-Password file 'passwords.enc' not found.
-Create new password file? (y/n): y
-Creating new password manager file...
+PyPWD - Secure Password Manager
+===================================
+Username: john
+User 'john' not found. Create new account? (y/n): y
+Creating new password manager account...
+Password requirements:
+- At least 10 characters long
 Set master password: 
 Confirm master password: 
-Password file 'passwords.enc' created successfully!
-Enter master password: 
+User account 'john' created successfully!
 Password manager loaded successfully!
 
 Options:
 1. Add password
-2. List passwords (interactive)
-3. Search passwords (interactive)
-4. List passwords (simple)
-5. Search passwords (simple)
-6. Edit password
-7. Exit
+2. List passwords
+3. Search passwords
+4. Exit
 
-Select option (1-7): 1
+Select option (1-4): 1
 
 Add new password entry:
 Service/Website: gmail
@@ -132,28 +135,33 @@ Password saved successfully!
 
 ## Security Features
 
-- **Unique Salt Per File**: Each password file uses a cryptographically secure random salt
-- **PBKDF2 Key Derivation**: Uses 100,000 iterations for key strengthening
+- **Unique Salt Per User**: Each user account uses a cryptographically secure random salt
+- **PBKDF2 Key Derivation**: Uses 100,000 iterations for key strengthening  
 - **Fernet Encryption**: Symmetric encryption using cryptographically secure methods
 - **Secure Password Input**: Uses `getpass` module to hide password input
 - **Password Length Requirements**: Enforces minimum 10-character master passwords
 - **Rate Limiting**: Protection against brute force attacks (3 attempts, 30-second lockout)
-- **Restrictive File Permissions**: Password files are set to owner-only access (600)
-- **Path Traversal Protection**: Validates filenames to prevent directory traversal attacks
-- **Secure Search**: Option to hide passwords in search results
+- **Database Security**: Individual password encryption in MySQL database
 - **Interactive UI**: Arrow key navigation and detailed entry views
 - **Notes Support**: Add notes and timestamps to password entries
 - **Export Functionality**: Export individual passwords to text files
-- **Local Storage Only**: Passwords never leave your local machine
+- **Multi-User Support**: Multiple users can maintain separate encrypted vaults
 
-## File Format
+## Database Schema
 
-The program creates an encrypted file (default: `passwords.enc`) that contains your password data. This file is completely encrypted and cannot be read without the master password.
+The program creates two MySQL tables:
+
+1. **users**: Stores user accounts with hashed master passwords and unique salts
+2. **passwords**: Stores individually encrypted password entries linked to users
+
+All password data is encrypted using the user's master password before being stored in the database.
 
 ## Requirements
 
 - Python 3.6+
+- MySQL 5.7+ or MariaDB 10.2+
 - cryptography library
+- mysql-connector-python library
 
 ## Security Considerations
 
