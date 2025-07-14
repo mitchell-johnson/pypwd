@@ -18,15 +18,13 @@ from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
 import base64
 
 class PasswordManager:
-    def __init__(self, db_config=None):
-        # Database configuration
-        self.db_config = db_config or {
-            'host': os.getenv('PYPWD_DB_HOST', 'localhost'),
-            'port': int(os.getenv('PYPWD_DB_PORT', '3306')),
-            'user': os.getenv('PYPWD_DB_USER', 'pypwd_user'),
-            'password': os.getenv('PYPWD_DB_PASSWORD', ''),
-            'database': os.getenv('PYPWD_DB_NAME', 'pypwd')
-        }
+    def __init__(self):
+        # Internal database configuration
+        self.db_host = os.getenv('PYPWD_DB_HOST', 'localhost')
+        self.db_port = int(os.getenv('PYPWD_DB_PORT', '3306'))
+        self.db_name = 'pypwd_secure'
+        self.db_user = 'pypwd_app'
+        self.db_password = self._generate_db_password()
         
         self.connection = None
         self.salt = None
@@ -36,11 +34,133 @@ class PasswordManager:
         self.max_attempts = 3
         self.lockout_duration = 30  # seconds
         
+        # Initialize database on first run
+        self._setup_database()
+        
+    def _generate_db_password(self):
+        """Generate a secure database password"""
+        return base64.urlsafe_b64encode(secrets.token_bytes(32)).decode()[:43]
+        
+    def _get_config_file(self):
+        """Get path to configuration file"""
+        home_dir = os.path.expanduser("~")
+        config_dir = os.path.join(home_dir, ".pypwd")
+        os.makedirs(config_dir, exist_ok=True)
+        return os.path.join(config_dir, "db_config.json")
+        
+    def _save_db_config(self):
+        """Save database configuration securely"""
+        config = {
+            'host': self.db_host,
+            'port': self.db_port,
+            'database': self.db_name,
+            'user': self.db_user,
+            'password': self.db_password
+        }
+        
+        config_file = self._get_config_file()
+        with open(config_file, 'w') as f:
+            json.dump(config, f)
+        
+        # Set restrictive permissions
+        os.chmod(config_file, 0o600)
+        
+    def _load_db_config(self):
+        """Load database configuration"""
+        config_file = self._get_config_file()
+        if os.path.exists(config_file):
+            try:
+                with open(config_file, 'r') as f:
+                    config = json.load(f)
+                    self.db_host = config['host']
+                    self.db_port = config['port']
+                    self.db_name = config['database']
+                    self.db_user = config['user']
+                    self.db_password = config['password']
+                    return True
+            except (json.JSONDecodeError, KeyError):
+                pass
+        return False
+        
+    def _setup_database(self):
+        """Setup database and user automatically"""
+        # Try to load existing config first
+        if self._load_db_config():
+            return
+            
+        print("Setting up PyPWD database for first time...")
+        print("This will create a secure database and user for PyPWD.")
+        
+        choice = input("\nSetup options:\n1. Automatic setup (requires MySQL root password)\n2. Manual setup (show commands to run)\nChoose (1/2): ").strip()
+        
+        if choice == "2":
+            print(f"\nPlease run these commands in MySQL as root:")
+            print(f"  CREATE DATABASE {self.db_name};")
+            print(f"  CREATE USER '{self.db_user}'@'localhost' IDENTIFIED BY '{self.db_password}';")
+            print(f"  GRANT ALL PRIVILEGES ON {self.db_name}.* TO '{self.db_user}'@'localhost';")
+            print(f"  FLUSH PRIVILEGES;")
+            
+            self._save_db_config()
+            print(f"\nConfiguration saved to: {self._get_config_file()}")
+            print("\nAfter running the commands, restart PyPWD.")
+            sys.exit(0)
+        
+        # Get MySQL root credentials for automatic setup
+        root_password = getpass.getpass("Enter MySQL root password: ")
+        
+        try:
+            # Connect as root to create database and user
+            root_connection = mysql.connector.connect(
+                host=self.db_host,
+                port=self.db_port,
+                user='root',
+                password=root_password
+            )
+            
+            cursor = root_connection.cursor()
+            
+            # Create database
+            cursor.execute(f"CREATE DATABASE IF NOT EXISTS {self.db_name}")
+            
+            # Create user with generated password
+            cursor.execute(f"CREATE USER IF NOT EXISTS '{self.db_user}'@'localhost' IDENTIFIED BY '{self.db_password}'")
+            cursor.execute(f"GRANT ALL PRIVILEGES ON {self.db_name}.* TO '{self.db_user}'@'localhost'")
+            cursor.execute("FLUSH PRIVILEGES")
+            
+            cursor.close()
+            root_connection.close()
+            
+            # Save configuration for future use
+            self._save_db_config()
+            
+            print("Database setup completed successfully!")
+            
+        except Error as e:
+            print(f"Database setup failed: {e}")
+            print("\nAlternative: If you don't have MySQL root access,")
+            print("please create the database and user manually:")
+            print(f"  CREATE DATABASE {self.db_name};")
+            print(f"  CREATE USER '{self.db_user}'@'localhost' IDENTIFIED BY '{self.db_password}';")
+            print(f"  GRANT ALL PRIVILEGES ON {self.db_name}.* TO '{self.db_user}'@'localhost';")
+            print(f"  FLUSH PRIVILEGES;")
+            print(f"\nDatabase password: {self.db_password}")
+            
+            # Save config anyway for manual setup
+            self._save_db_config()
+            print(f"\nConfiguration saved to: {self._get_config_file()}")
+            sys.exit(1)
+            
     def _connect_db(self):
         """Establish database connection"""
         try:
             if self.connection is None or not self.connection.is_connected():
-                self.connection = mysql.connector.connect(**self.db_config)
+                self.connection = mysql.connector.connect(
+                    host=self.db_host,
+                    port=self.db_port,
+                    user=self.db_user,
+                    password=self.db_password,
+                    database=self.db_name
+                )
                 self._create_tables()
             return True
         except Error as e:

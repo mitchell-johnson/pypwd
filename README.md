@@ -23,27 +23,16 @@ cd pypwd
 pip install -r requirements.txt
 ```
 
-3. Set up MySQL database:
+3. Ensure MySQL is running on your system:
 ```bash
-# Create database and user
-mysql -u root -p
-```
-```sql
-CREATE DATABASE pypwd;
-CREATE USER 'pypwd_user'@'localhost' IDENTIFIED BY 'your_password';
-GRANT ALL PRIVILEGES ON pypwd.* TO 'pypwd_user'@'localhost';
-FLUSH PRIVILEGES;
-EXIT;
-```
+# On macOS (using Homebrew)
+brew services start mysql
 
-4. Configure database connection (optional):
-```bash
-# Set environment variables (optional - defaults to localhost)
-export PYPWD_DB_HOST=localhost
-export PYPWD_DB_PORT=3306
-export PYPWD_DB_USER=pypwd_user
-export PYPWD_DB_PASSWORD=your_password
-export PYPWD_DB_NAME=pypwd
+# On Linux (Ubuntu/Debian)
+sudo systemctl start mysql
+
+# On Linux (CentOS/RHEL)
+sudo systemctl start mysqld
 ```
 
 ## Usage
@@ -55,14 +44,25 @@ python pypwd.py
 
 ## First Time Setup
 
-When you run the program for the first time:
+When you run PyPWD for the first time, it will automatically set up its own secure database:
 
+### Automatic Database Setup
+1. PyPWD will detect it's the first run and offer setup options
+2. Choose **Automatic setup** (requires MySQL root password) or **Manual setup**
+3. For automatic setup, enter your MySQL root password when prompted
+4. PyPWD will create its own database (`pypwd_secure`) and user (`pypwd_app`)
+5. All database credentials are generated securely and stored in `~/.pypwd/db_config.json`
+
+### User Account Creation
 1. Enter a username for your account
 2. If the username doesn't exist, you'll be prompted to create a new account
 3. Set your master password (this encrypts all your stored passwords)
 4. Confirm your master password
 
 **Important**: Remember your master password! There is no way to recover it if forgotten.
+
+### Manual Setup (if you don't have MySQL root access)
+If you choose manual setup or automatic setup fails, PyPWD will display the exact SQL commands to run as a MySQL administrator.
 
 ## Menu Options
 
@@ -106,6 +106,16 @@ When you select an entry in interactive mode, you'll see a detailed view with th
 
 ```
 $ python pypwd.py
+Setting up PyPWD database for first time...
+This will create a secure database and user for PyPWD.
+
+Setup options:
+1. Automatic setup (requires MySQL root password)
+2. Manual setup (show commands to run)
+Choose (1/2): 1
+Enter MySQL root password: ********
+Database setup completed successfully!
+
 PyPWD - Secure Password Manager
 ===================================
 Username: john
@@ -149,12 +159,25 @@ Password saved successfully!
 
 ## Database Schema
 
-The program creates two MySQL tables:
+PyPWD automatically creates its own secure database (`pypwd_secure`) with two tables:
 
 1. **users**: Stores user accounts with hashed master passwords and unique salts
 2. **passwords**: Stores individually encrypted password entries linked to users
 
 All password data is encrypted using the user's master password before being stored in the database.
+
+## Configuration
+
+PyPWD stores its database configuration in `~/.pypwd/db_config.json` with restricted permissions (600). This file contains:
+- Database connection details
+- Generated secure credentials
+- Host and port configuration
+
+You can customize the MySQL host/port using environment variables:
+```bash
+export PYPWD_DB_HOST=localhost  # default
+export PYPWD_DB_PORT=3306       # default
+```
 
 ## Requirements
 
